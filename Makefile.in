@@ -1,0 +1,47 @@
+top_srcdir = @top_srcdir@
+
+PKG_NAME = ropic
+SOURCES  = \
+	log.ml \
+	pdu.ml \
+	ropic.ml \
+	event.ml \
+	rpc.ml
+
+EXAMPLES_BYTE = fungw.byte
+
+REQUIRES = batteries oUnit cmdliner
+
+EXAMPLES_OPT = $(EXAMPLES_BYTE:.byte=.opt)
+EXAMPLES = $(EXAMPLES_BYTE) $(EXAMPLES_OPT)
+EXTRA_INSTALL = fungw
+
+SYNTAX =
+
+.PHONY: all loc
+all: $(XARCHIVE) examples fungw
+
+include $(top_srcdir)/make.common
+
+opt: $(XARCHIVE)
+
+examples: $(XARCHIVE) $(EXAMPLES_OPT)
+$(EXAMPLES_BYTE): $(ARCHIVE)
+$(EXAMPLES_OPT): $(XARCHIVE)
+
+TEST_PROGRAMS = check.ml
+check.cmo: $(ARCHIVE)
+check-spec: $(TEST_PROGRAMS:.ml=.opt)
+	@for p in $^ ; do \
+	  ./$$p && echo "$$p OK" || (echo ; echo "     XXXXX $$p FAILED!! XXXXX" ; echo) ;\
+	done
+
+clean-spec:
+
+dep-spec:
+
+install-spec:
+
+fungw: fungw.opt
+	ln -f $< $@
+

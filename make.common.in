@@ -1,0 +1,130 @@
+# vim:filetype=make
+OCAMLC     = @OCAMLFIND@ ocamlc
+OCAMLOPT   = @OCAMLFIND@ ocamlopt
+OCAMLDEP   = @OCAMLFIND@ ocamldep
+OCAMLDOC   = @OCAMLFIND@ ocamldoc -html -colorize-code -all-params
+OCAMLMKTOP = @OCAMLFIND@ ocamlmktop -w Ael-31-33-40-42-44-45 -g
+QTEST      = qtest
+override OCAMLFLAGS    += $(INCS) -w Ael-31-33-40-41-42-44-45 -g -annot
+override OCAMLOPTFLAGS += $(OCAMLFLAGS) -inline 9
+override OCAMLCFLAGS   += $(OCAMLFLAGS)
+CAMLINCLUDE = $(shell @OCAMLFIND@ printconf stdlib)
+override CPPFLAGS      += @CPPFLAGS@ -I @prefix@/include -I $(CAMLINCLUDE) -I $(top_srcdir) -D_GNU_SOURCE
+override CFLAGS        += @CFLAGS@ -O2 -std=c99 -W -Wall
+override LDFLAGS       += @LDFLAGS@ -L@prefix@/lib
+
+builddir = @builddir@
+datadir = @datadir@
+datarootdir = @datarootdir@
+exec_prefix = @exec_prefix@
+libdir = @libdir@
+libexecdir = @libexecdir@
+localedir = @localedir@
+localstatedir = @localstatedir@
+mandir = @mandir@
+prefix = @prefix@
+bindir = @bindir@
+sbindir = @sbindir@
+sharedstatedir = @sharedstatedir@
+srcdir = @srcdir@
+sysconfdir = @sysconfdir@
+top_build_prefix = @top_build_prefix@
+top_builddir = @top_builddir@
+
+.PHONY: opt clean clean-spec install uninstall reinstall doc clear dep dep-spec
+
+SOURCES_ML = $(filter %.ml, $(SOURCES))
+SOURCES_MLI = $(filter %.mli, $(SOURCES))
+OBJECTS  = $(SOURCES_ML:.ml=.cmo)
+XOBJECTS = $(OBJECTS:.cmo=.cmx)
+ifdef PKG_NAME
+ARCHIVE  = $(PKG_NAME).cma
+XARCHIVE = $(ARCHIVE:.cma=.cmxa)
+$(CLIB): $(C_SOURCES:.c=.o)
+	$(AR) rcs $@ $^
+$(ARCHIVE): $(SOURCES_MLI:.mli=.cmi) $(OBJECTS) $(CLIB)
+	$(OCAMLC)   -a -o $@ $(SYNTAX) -package "$(REQUIRES)" -custom -linkpkg $(OCAMLCFLAGS) $(OBJECTS) $(LIBS)
+$(XARCHIVE): $(SOURCES_MLI:.mli=.cmi) $(XOBJECTS) $(CLIB)
+	$(OCAMLOPT) -a -o $@ $(SYNTAX) -package "$(REQUIRES)" $(OCAMLOPTFLAGS) $(XOBJECTS) $(LIBS)
+install: $(ARCHIVE) $(XARCHIVE) install-spec
+	if test -f "$(XARCHIVE)" ; then extra="$(XARCHIVE) "`basename "$(XARCHIVE)" .cmxa`.a ; fi ; \
+	@OCAMLFIND@ install "$(PKG_NAME)" *.cmi "$(ARCHIVE)" META $(EXTRA_INSTALL) $(CLIB) $$extra
+uninstall: uninstall-spec
+	@OCAMLFIND@ remove $(PKG_NAME)
+reinstall: uninstall install
+endif
+
+# Common rules
+.SUFFIXES: .mll .mly .ml .mli .cmo .cmi .cmx .cmxs .opt .byte
+
+.cmo.byte: $(ARCHIVE)
+	$(OCAMLC)   -o $@ $(SYNTAX) -package "$(REQUIRES)" -ccopt -L$(top_srcdir) -ccopt -L@prefix@/lib $(ARCHIVE) $(EXTRALIBS) -linkpkg $(OCAMLCFLAGS) $^
+
+.cmx.opt: $(XARCHIVE)
+	$(OCAMLOPT) -o $@ $(SYNTAX) -package "$(REQUIRES)" -ccopt -L$(top_srcdir) -ccopt -L@prefix@/lib $(XARCHIVE) $(EXTRALIBS:.cma=.cmxa) -linkpkg $(OCAMLOPTFLAGS) $^
+
+.ml.cmo:
+	$(OCAMLC) $(SYNTAX) -package "$(REQUIRES)" $(OCAMLCFLAGS) -c $<
+
+.mli.cmi:
+	$(OCAMLC) $(SYNTAX) -package "$(REQUIRES)" $(OCAMLCFLAGS) -c $<
+
+.ml.cmx:
+	$(OCAMLOPT) $(SYNTAX) -package "$(REQUIRES)" $(OCAMLOPTFLAGS) -c $<
+
+.ml.cmxs:
+	$(OCAMLOPT) $(SYNTAX) -package "$(REQUIRES)" $(OCAMLOPTFLAGS) -o $@ -shared $<
+
+.mll.ml:
+	$(OCAMLLEX) $<
+
+.mly.ml:
+	$(OCAMLYACC) $<
+
+.mly.mli:
+	$(OCAMLYACC) $<
+
+# Tests with qtest
+
+all_tests.byte: all_tests.cmo $(ARCHIVE)
+	$(OCAMLC)   -o $@ $(SYNTAX) -package "$(REQUIRES) QTest2Lib" -ccopt -L$(top_srcdir) $(ARCHIVE) $(EXTRALIBS) -linkpkg $(OCAMLCFLAGS) $<
+
+all_tests.cmo: all_tests.ml $(SOURCES_MLI:.mli=.cmi) $(OBJECTS)
+	$(OCAMLC) $(SYNTAX) -package "$(REQUIRES) QTest2Lib" $(OCAMLCFLAGS) -c -impl $<
+
+all_tests.opt: all_tests.cmx $(XARCHIVE)
+	$(OCAMLOPT) -o $@ $(SYNTAX) -package "$(REQUIRES) QTest2Lib" -ccopt -L$(top_srcdir) $(XARCHIVE) $(EXTRALIBS:.cma=.cmxa) -linkpkg $(OCAMLOPTFLAGS) $<
+
+all_tests.cmx: all_tests.ml $(SOURCES_MLI:.mli=.cmi) $(XOBJECTS)
+	$(OCAMLOPT) $(SYNTAX) -package "$(REQUIRES) QTest2Lib" $(OCAMLOPTFLAGS) -c -impl $<
+
+all_tests.ml: $(SOURCES)
+	$(QTEST) --preamble 'open Batteries;;' -o $@ extract $^
+
+check: all_tests.opt check-spec
+	@echo "Running inline tests"
+	@./$< --shuffle
+
+# Clean up
+clean: clean-spec
+	rm -f *.cm[ioxa] *.cmxa *.cmxs *.a *.s *.o *.byte *.opt .depend *.annot all_tests.*
+
+# Dependencies
+.depend:
+	$(OCAMLDEP) $(SYNTAX) -package "$(REQUIRES)" *.ml *.mli > $@
+ifdef C_SOURCES
+	$(CC) -M $(CPPFLAGS) $(C_SOURCES) >> $@
+endif
+
+dep: dep-spec
+	@rm -f .depend
+	$(MAKE) .depend
+
+doc: $(SOURCES)
+	mkdir -p $@
+	$(OCAMLDOC) $(SYNTAX) -d doc $^
+
+clear:
+	sed -i -e 's/[ 	]\+$$//' $(wildcard *.ml *.c *.scm)
+
+-include .depend

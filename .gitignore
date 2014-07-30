@@ -1,0 +1,10 @@
+.depend
+Makefile
+autom4te.cache/
+config.status
+make.common
+fungw
+*.log
+*.annot
+*.opt
+*.a
