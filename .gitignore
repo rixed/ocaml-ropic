@@ -8,3 +8,11 @@ fungw
 *.annot
 *.opt
 *.a
+*.cmx
+*.cmxi
+*.cma
+*.cmxa
+*.cmi
+*.o
+all_tests.ml
+configure

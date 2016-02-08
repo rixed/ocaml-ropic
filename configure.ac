@@ -13,22 +13,9 @@ if test "$OCAMLFIND" = "no"; then
   AC_MSG_ERROR([You must install OCaml findlib (the ocamlfind command)])
 fi
 
-## OCaml installs graphics/META even without graphics support :-(
-#AC_CHECK_OCAML_PKG([graphics])
-#if test "$OCAML_PKG_graphics" = "no"; then
-#  AC_WARN([Graphics library not found.])
-#fi
-
-AC_CHECK_OCAML_MODULE(have_graphics,graphics,[Graphics],[+graphics])
-if test -z "$have_graphics" ; then
-  AC_WARN([Graphics library not found.])
-fi
-
-AC_CHECK_OCAML_WORD_SIZE
-
-AC_ARG_VAR(GEOIPDB, [Location of the GeoIP database to use])
-AC_ARG_VAR(DBDIR, [Location of database])
-AC_ARG_VAR(ADD_PATH, [Additional directories to add into PATH for compiling])
+AC_CHECK_OCAML_PKG(batteries)
+AC_CHECK_OCAML_PKG(cmdliner)
+AC_CHECK_OCAML_PKG(oUnit)
 
 AC_CONFIG_FILES([Makefile make.common])
 AC_OUTPUT

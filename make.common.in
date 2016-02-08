@@ -99,11 +99,11 @@ all_tests.cmx: all_tests.ml $(SOURCES_MLI:.mli=.cmi) $(XOBJECTS)
 	$(OCAMLOPT) $(SYNTAX) -package "$(REQUIRES) QTest2Lib" $(OCAMLOPTFLAGS) -c -impl $<
 
 all_tests.ml: $(SOURCES)
-	$(QTEST) --preamble 'open Batteries;;' -o $@ extract $^
+	$(QTEST) --shuffle --preamble 'open Batteries;;' -o $@ extract $^
 
 check: all_tests.opt check-spec
 	@echo "Running inline tests"
-	@./$< --shuffle
+	@./$<
 
 # Clean up
 clean: clean-spec
