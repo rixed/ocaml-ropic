@@ -19,10 +19,11 @@ EXTRA_INSTALL = fungw
 SYNTAX =
 
 .PHONY: all loc
-all: $(XARCHIVE) examples fungw
+all: libs examples fungw
 
 include $(top_srcdir)/make.common
 
+libs: $(XARCHIVE) $(ARCHIVE)
 opt: $(XARCHIVE)
 
 examples: $(XARCHIVE) $(EXAMPLES_OPT)

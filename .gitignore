@@ -14,5 +14,6 @@ fungw
 *.cmxa
 *.cmi
 *.o
+*.cmo
 all_tests.ml
 configure
