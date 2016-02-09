@@ -78,7 +78,7 @@ struct
         | Some k ->
             E.L.debug "Timeouting message id %d" id ;
             Hashtbl.remove continuations id ;
-            k Timeout
+            k (Err "timeout")
         | None -> ()
 
     let call ?(timeout=0.5) h v k =

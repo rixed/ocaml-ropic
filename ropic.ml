@@ -14,7 +14,6 @@ end
 
 (* Retriable errors will be retried *)
 type 'a res = Ok of 'a
-            | Timeout
             | Err of string
 
 module RPC =
