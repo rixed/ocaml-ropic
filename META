@@ -1,3 +1,5 @@
 description = "Minimalistic RPC and event loop"
 version = "1"
 requires = "batteries oUnit cmdliner"
+archive(byte) = "ropic.cma"
+archive(native) = "ropic.cmxa"
