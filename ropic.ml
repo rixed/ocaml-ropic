@@ -42,7 +42,7 @@ struct
         val serve : Address.t -> (Address.t -> (Types.ret -> unit) -> Types.arg -> unit) -> unit
     end
 
-    module type Maker = functor(Types : TYPES) -> (S with module Types = Types)
+    module type Maker = functor (Types : TYPES) -> (S with module Types = Types)
 end
 
 module type BaseIOType =

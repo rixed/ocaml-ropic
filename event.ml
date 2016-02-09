@@ -3,8 +3,6 @@ open Ropic
 
 type fd = Unix.file_descr
 
-module L = Log.Info
-
 type monitored_files = fd list (* readables *)
                      * fd list (* writables *)
                      * fd list (* exceptional conditions *)
@@ -13,6 +11,7 @@ type handler = { register_files : monitored_files -> monitored_files ;
                   process_files : handler (* so we can unregister *) -> monitored_files -> unit }
 
 type alert = float * (unit -> unit)
+
 module AlertHeap = Heap.Make (
 struct
     type t = alert
@@ -22,89 +21,107 @@ end)
 let alerts = ref AlertHeap.empty
 
 type condition = (unit -> bool) * (unit -> unit)
-let conditions = ref ([] : condition list) (* test them each time anything happens *)
+module type S =
+sig
+  module L : Log.S
+  val unregister : handler -> unit
+  val register : handler -> unit
+  val loop : ?timeout:float -> unit -> unit
+  val register_timeout : (handler -> unit) -> unit
+  val pause : float -> (unit -> unit) -> unit
+  val condition : (unit -> bool) -> (unit -> unit) -> unit
+  val clear : unit -> unit
+end
 
-let try_conditions () =
-    conditions := List.fold_left (fun lst (c, f as cond) ->
-        if c () then (
-            f () ;
-            lst
-        ) else cond::lst) [] !conditions
+module Make (L : Log.S) : S with module L = L =
+struct
+  module L = L
+  let conditions = ref ([] : condition list) (* test them each time anything happens *)
 
-let select_once max_timeout handlers =
-    let collect_all_monitored_files handlers =
-        List.fold_left (fun files handler ->
-            handler.register_files files)
-            ([],[],[]) handlers
-    and process_all_monitored_files handlers files =
-        List.iter (fun handler -> handler.process_files handler files) handlers in
+  let try_conditions () =
+      conditions := List.fold_left (fun lst (c, f as cond) ->
+          if c () then (
+              f () ;
+              lst
+          ) else cond::lst) [] !conditions
 
-    try_conditions () ;
-    let open Unix in
-    let rfiles, wfiles, efiles = collect_all_monitored_files handlers in
-    let timeout =
-        if AlertHeap.size !alerts = 0 then max_timeout else
-        let next_time, _ = AlertHeap.find_min !alerts in
-        let dt = next_time -. Unix.gettimeofday () in
-        min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
-    (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
-    try let changed_files = select rfiles wfiles efiles timeout in
-        (* alerts go first (take care that alert can add alerts and so on) *)
-        let latest_alert = Unix.gettimeofday () +. 0.001 in
-        let rec next_alert () =
-            if AlertHeap.size !alerts > 0 then (
-                let t, f = AlertHeap.find_min !alerts in
-                if t < latest_alert then (
-                    alerts := AlertHeap.del_min !alerts ; (* take care not to call anything between find_min and del_min! *)
-                    f () ;
-                    next_alert ())) in
-        next_alert () ;
-        (* then file handlers *)
-        let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
-        L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
-        process_all_monitored_files handlers changed_files
-    with Unix_error (EINTR,_,_) -> ()
+  let select_once max_timeout handlers =
+      let collect_all_monitored_files handlers =
+          List.fold_left (fun files handler ->
+              handler.register_files files)
+              ([],[],[]) handlers
+      and process_all_monitored_files handlers files =
+          List.iter (fun handler -> handler.process_files handler files) handlers in
 
-let handlers = ref []
+      try_conditions () ;
+      let open Unix in
+      let rfiles, wfiles, efiles = collect_all_monitored_files handlers in
+      let timeout =
+          if AlertHeap.size !alerts = 0 then max_timeout else
+          let next_time, _ = AlertHeap.find_min !alerts in
+          let dt = next_time -. Unix.gettimeofday () in
+          min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
+      (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
+      try let changed_files = select rfiles wfiles efiles timeout in
+          (* alerts go first (take care that alert can add alerts and so on) *)
+          let latest_alert = Unix.gettimeofday () +. 0.001 in
+          let rec next_alert () =
+              if AlertHeap.size !alerts > 0 then (
+                  let t, f = AlertHeap.find_min !alerts in
+                  if t < latest_alert then (
+                      alerts := AlertHeap.del_min !alerts ; (* take care not to call anything between find_min and del_min! *)
+                      f () ;
+                      next_alert ())) in
+          next_alert () ;
+          (* then file handlers *)
+          let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
+          L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
+          process_all_monitored_files handlers changed_files
+      with Unix_error (EINTR,_,_) -> ()
 
-let loop ?(timeout=1.) () =
-    L.info "Entering event loop" ;
-    while not (!handlers = [] && AlertHeap.size !alerts = 0) do
-        select_once timeout !handlers
-    done
+  let handlers = ref []
 
-let register handler =
-    handlers := handler :: !handlers ;
-    L.debug "Registering a new handler, now got %d" (List.length !handlers)
+  let loop ?(timeout=1.) () =
+      L.info "Entering event loop" ;
+      while not (!handlers = [] && AlertHeap.size !alerts = 0) do
+          select_once timeout !handlers
+      done
 
-(* TODO: give current time to timeout handlers *)
-let register_timeout f =
-    let handler = { register_files = identity ;
-                    process_files = fun handler _files -> f handler } in
-    register handler
+  let register handler =
+      handlers := handler :: !handlers ;
+      L.debug "Registering a new handler, now got %d" (List.length !handlers)
 
-let pause delay f =
-    let date = Unix.gettimeofday () +. delay in
-    alerts := AlertHeap.add (date, f) !alerts
+  (* TODO: give current time to timeout handlers *)
+  let register_timeout f =
+      let handler = { register_files = identity ;
+                      process_files = fun handler _files -> f handler } in
+      register handler
 
-let condition cond f =
-    conditions := (cond, f)::!conditions
+  let pause delay f =
+      let date = Unix.gettimeofday () +. delay in
+      alerts := AlertHeap.add (date, f) !alerts
 
-let unregister handler =
-    handlers := List.filter ((!=) handler) !handlers ;
-    L.debug "Unregistering a handler, now got %d" (List.length !handlers)
+  let condition cond f =
+      conditions := (cond, f)::!conditions
 
-let clear () =
-    handlers := [] ;
-    alerts := AlertHeap.empty ;
-    conditions := []
+  let unregister handler =
+      handlers := List.filter ((!=) handler) !handlers ;
+      L.debug "Unregistering a handler, now got %d" (List.length !handlers)
+
+  let clear () =
+      handlers := [] ;
+      alerts := AlertHeap.empty ;
+      conditions := []
+end
 
 (* Buffered reader/writer of marshaled values of type IOType.t_read/IOType.t_write. *)
-module BufferedIO (T : IOType) (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write) =
+module BufferedIO (T : IOType)
+                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                  (E : S) =
 struct
     let try_write_buf buf fd =
         let str = Buffer.contents buf in
-        L.debug "writing %d bytes info fd %a" (String.length str) Log.file fd ;
+        E.L.debug "writing %d bytes info fd %a" (String.length str) Log.file fd ;
         let sz = Unix.single_write fd str 0 (String.length str) in
         Buffer.clear buf ;
         Buffer.add_substring buf str sz (String.length str - sz)
@@ -117,7 +134,7 @@ struct
            then the event loop will call us again at once *)
         let str = String.create 1500 in
         let sz = Unix.read fd str 0 (String.length str) in
-        L.debug "Read %d bytes from file" sz ;
+        E.L.debug "Read %d bytes from file" sz ;
         if sz = 0 then (
             value_cb writer T.EndOfFile ;
             true
@@ -127,7 +144,7 @@ struct
              * Beware that we may have 0, 1 or more values in rbuf *)
             let rec read_next content ofs =
                 let len = String.length content - ofs in
-                L.debug "Still %d bytes to read from buffer" len ;
+                E.L.debug "Still %d bytes to read from buffer" len ;
                 (* Do we have enough bytes to read a value? *)
                 (match Pdu.has_value content ofs len with
                 | None -> ofs
@@ -169,10 +186,10 @@ struct
             if List.mem infd rfiles then (
                 assert (not !closed_in) ; (* otherwise we were not in the select fileset *)
                 if try_read_value infd inbuf (reset_timeout_and value_cb) writer then (
-                    L.debug "infd is closed by peer" ;
+                    E.L.debug "infd is closed by peer" ;
                     closed_in := true ;
                     if infd <> outfd then (
-                        L.debug "Closing infd" ;
+                        E.L.debug "Closing infd" ;
                         Unix.close infd
                     ) else (
                         assert (!close_out <> Done) ;
@@ -187,18 +204,20 @@ struct
                     value_cb writer (Timeout now)))
                 cnx_timeout ;
             if !close_out = ToDo then (
-                L.debug "Closing outfd" ;
+                E.L.debug "Closing outfd" ;
                 Unix.close outfd ;
                 close_out := Done ;
                 if infd = outfd then closed_in := true ;
-                if !closed_in then unregister handler)
+                if !closed_in then E.unregister handler)
             in
-        register { register_files ; process_files } ;
+        E.register { register_files ; process_files } ;
         (* Return the writer function *)
         writer
 end
 
-module TcpClient (T : IOType) (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write) :
+module TcpClient (T : IOType)
+                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                 (E : S) :
 sig
     (* [client "server.com" "http" reader] connect to server.com:80 and will send all read value to [reader]
      * function. The returned value is the writer function.
@@ -211,18 +230,18 @@ sig
     val client : ?cnx_timeout:float -> string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
 end =
 struct
-    module BIO = BufferedIO (T) (Pdu)
+    module BIO = BufferedIO (T) (Pdu) (E)
 
     let connect host service =
         let open Unix in
         getaddrinfo host service [AI_SOCKTYPE SOCK_STREAM ; AI_CANONNAME ] |>
         List.find_map (fun ai ->
-            L.info "Connecting to %s:%s" ai.ai_canonname service ;
+            E.L.info "Connecting to %s:%s" ai.ai_canonname service ;
             try let sock = socket ai.ai_family ai.ai_socktype ai.ai_protocol in
                 Unix.connect sock ai.ai_addr ;
                 Some sock
             with exn ->
-                L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
+                E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
                 None)
 
     let client ?cnx_timeout host service buf_reader =
@@ -234,7 +253,8 @@ end
 
 module TcpServer (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (Clt : sig type t end) :
+                 (Clt : sig type t end)
+                 (E : S) :
 sig
     (* [serve service new_clt callback] listen on port [service] and serve each query with [callback].
      * A shutdown function is returned that will stop the server from accepting new connections. *)
@@ -244,13 +264,13 @@ sig
                 (unit -> unit)
 end =
 struct
-    module BIO = BufferedIO (T) (Pdu)
+    module BIO = BufferedIO (T) (Pdu) (E)
 
     let listen service =
         let open Unix in
         match getaddrinfo "" service [AI_SOCKTYPE SOCK_STREAM; AI_PASSIVE;] with
         | ai::_ ->
-            L.info "Listening on %s" service ;
+            E.L.info "Listening on %s" service ;
             let sock = socket PF_INET SOCK_STREAM 0 in
             setsockopt sock SO_REUSEADDR true ;
             setsockopt sock SO_KEEPALIVE true ;
@@ -265,9 +285,9 @@ struct
         Option.may (fun n -> assert (n > 0)) max_accepted ;
         let listen_fd = listen service in
         let rec stop_listening () =
-            L.debug "Closing listening socket" ;
+            E.L.debug "Closing listening socket" ;
             Unix.close listen_fd ;
-            unregister handler
+            E.unregister handler
         (* We need a special kind of event handler to handle the listener fd:
          * one that accept when it's readable and that never write. *)
         and register_files (rfiles, wfiles, efiles) =
@@ -275,7 +295,7 @@ struct
         and process_files _handler (rfiles, _, _) =
             if List.mem listen_fd rfiles then (
                 let client_fd, sockaddr = Unix.accept listen_fd in
-                L.info "Accepting new cnx %a" Log.file client_fd ;
+                E.L.info "Accepting new cnx %a" Log.file client_fd ;
                 incr accepted ;
                 (match max_accepted with
                     | Some n when !accepted >= n -> stop_listening ()
@@ -285,7 +305,7 @@ struct
                 ()
             )
         and handler = { register_files ; process_files } in
-        register handler ;
+        E.register handler ;
         stop_listening
 end
 

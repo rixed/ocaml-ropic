@@ -22,7 +22,10 @@ struct
     let max_accepted = None
 end
 
-module Tcp (Config : TCP_CONFIG) (Types : RPC.TYPES) : RPC.S with module Types = Types =
+module Tcp (Config : TCP_CONFIG)
+           (E : Event.S)
+           (Types : RPC.TYPES) :
+    RPC.S with module Types = Types =
 struct
     module Types = Types
 
@@ -34,8 +37,8 @@ struct
         type t_write = id * Types.ret
     end
     module Srv_IOType = MakeIOType (BaseIOType)
-    module Srv_Pdu = Pdu.Marshaller (Srv_IOType)
-    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (struct type t = Address.t end)
+    module Srv_Pdu = Pdu.Marshaller (Srv_IOType) (E.L)
+    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (struct type t = Address.t end) (E)
 
     open Config
 
@@ -49,9 +52,9 @@ struct
                 write Srv_IOType.Close) in
         () (* we keep serving until we die *)
 
-    module Clt_IOType = MakeIOTypeRev(BaseIOType)
-    module Clt_Pdu = Pdu.Marshaller(Clt_IOType)
-    module TcpClient = Event.TcpClient(Clt_IOType)(Clt_Pdu)
+    module Clt_IOType = MakeIOTypeRev (BaseIOType)
+    module Clt_Pdu = Pdu.Marshaller (Clt_IOType) (E.L)
+    module TcpClient = Event.TcpClient (Clt_IOType) (Clt_Pdu) (E)
 
     (* Notice that:
      * - the TCP cnx is initialized when first used and then saved for later,
@@ -73,7 +76,7 @@ struct
     let try_timeout id =
         match  Hashtbl.find_option continuations id with
         | Some k ->
-            L.debug "Timeouting message id %d" id ;
+            E.L.debug "Timeouting message id %d" id ;
             Hashtbl.remove continuations id ;
             k Timeout
         | None -> ()
@@ -84,7 +87,7 @@ struct
             | Some w -> w
             | None ->
                 (* connect to the server *)
-                L.debug "Need a new connection to %s" (Address.to_string h) ;
+                E.L.debug "Need a new connection to %s" (Address.to_string h) ;
                 let w = TcpClient.client ~cnx_timeout h.Address.name (string_of_int h.Address.port) (fun write input ->
                     match input with
                     | Clt_IOType.Value (id, v) ->
@@ -93,23 +96,23 @@ struct
                          * can itself update the hash. *)
                         (match Hashtbl.find_option continuations id with
                         | None ->
-                            L.error "No continuation for message id %d (already timeouted?)" id
+                            E.L.error "No continuation for message id %d (already timeouted?)" id
                         | Some k ->
-                            L.debug "Continuing message id %d" id ;
+                            E.L.debug "Continuing message id %d" id ;
                             k (Ok v) ;
                             Hashtbl.remove continuations id)
                     | Clt_IOType.Timeout _now -> (* called when the underlying IO had nothing to read for too long *)
                         ()
                     | Clt_IOType.EndOfFile ->
                         (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
-                        L.info "Closing cnx to %s" (Address.to_string h) ;
+                        E.L.info "Closing cnx to %s" (Address.to_string h) ;
                         write Close ;
                         Hashtbl.remove cnxs h) in
                 Hashtbl.add cnxs h w ;
                 w in
         let id = next_id () in
-        L.debug "Saving continuation for message id %d" id ;
-        Event.pause timeout (fun () -> try_timeout id) ;
+        E.L.debug "Saving continuation for message id %d" id ;
+        E.pause timeout (fun () -> try_timeout id) ;
         Hashtbl.add continuations id k ;
         writer (Write (id, v))
 

@@ -1,7 +1,8 @@
 open Batteries
 open Ropic
 
-module L = Log.Debug
+module L = Log.Debug (Log.ToStdout)
+module E = Event.Make (L)
 
 (* This program merely:
  * listen to some port and connect to a given destination, then
@@ -121,7 +122,7 @@ end
 
 module Link =
 struct
-    module IOType = MakeIOType(Pdu.AllStrings)
+    module IOType = MakeIOType (Pdu.AllStrings)
     module Clt =
     struct
         type queue =
@@ -136,8 +137,8 @@ struct
               mutable condition : Condition.t * Condition.t ;
               mutable closed : bool }
     end
-    module TcpServer = Event.TcpServer (IOType) (Pdu.Blobber) (Clt)
-    module TcpClient = Event.TcpClient (IOType) (Pdu.Blobber)
+    module TcpServer = Event.TcpServer (IOType) (Pdu.Blobber) (Clt) (E)
+    module TcpClient = Event.TcpClient (IOType) (Pdu.Blobber) (E)
 
     type t =
         (* We call 'out' the direction from client to server
@@ -169,7 +170,7 @@ struct
             let open Condition in
             let d = Random.float cond.lag.chance in
             L.debug "%s: rescheduling in %gs" name d ;
-            Event.pause d (fun () -> delay_send name clt which)
+            E.pause d (fun () -> delay_send name clt which)
         )
 
     let make_client t address =
@@ -250,7 +251,7 @@ let () =
     match Term.(eval (pure start_all $ links, info "fungw")) with
     | `Error _ -> exit 1
     | `Ok _shutdowns ->
-        Event.loop () ;
+        E.loop () ;
         exit 0
     | `Version | `Help -> exit 0
 

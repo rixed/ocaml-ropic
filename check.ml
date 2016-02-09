@@ -1,7 +1,8 @@
 (* Tests *)
 open Batteries
 open Ropic
-module L = Log.Debug
+module L = Log.Debug (Log.ToStdout)
+module E = Event.Make (L)
 
 (* Check TcpClient *)
 
@@ -14,11 +15,11 @@ struct
     end
     (* We simulate a 'string-length' service: client sends string and read their length *)
     module CltT = MakeIOType (BaseIOType)
-    module Clt_Pdu = Pdu.Marshaller(CltT)
-    module Clt = Event.TcpClient (CltT) (Clt_Pdu)
+    module Clt_Pdu = Pdu.Marshaller(CltT) (L)
+    module Clt = Event.TcpClient (CltT) (Clt_Pdu) (E)
     module SrvT = MakeIOTypeRev (BaseIOType)
-    module Srv_Pdu = Pdu.Marshaller(SrvT)
-    module Srv = Event.TcpServer (SrvT) (Srv_Pdu) (struct type t = unit end)
+    module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
+    module Srv = Event.TcpServer (SrvT) (Srv_Pdu) (struct type t = unit end) (E)
     let checks () =
         let idx = ref 0 in
         let tests = [| "hello" ; "glop" ; "" |] in
@@ -38,7 +39,7 @@ struct
             | CltT.Timeout _
             | CltT.EndOfFile -> () (* we already closed at the beginning *)
             | CltT.Value l ->
-                OUnit2.assert_equal l (String.length tests.(!idx)) ;
+                OUnit2.assert_equal ~msg:"String length" l (String.length tests.(!idx)) ;
                 incr idx) in
         Array.iter (fun s -> send (CltT.Write s)) tests ;
         send CltT.Close
@@ -64,14 +65,14 @@ struct
     let checks () =
         RPC.call host (0, 1) (fun r ->
             L.debug "Test RPC(0,1)" ;
-            OUnit2.assert_equal r (Ok "1")) ;
+            OUnit2.assert_equal ~msg:"RPC answer is OK, 1" r (Ok "1")) ;
         RPC.call host (2, 3) (fun r ->
             L.debug "Test RPC(2,3)" ;
-            OUnit2.assert_equal r (Ok "5") ;
+            OUnit2.assert_equal ~msg:"RPC answer is OK, 5" r (Ok "5") ;
             (* And we can call an RPC from an answer *)
             RPC.call host (4, 5) (fun r ->
                 L.debug "Test RPC(4,5)" ;
-                OUnit2.assert_equal r (Ok "9")))
+                OUnit2.assert_equal ~msg:"RPC answer is OK, 9" r (Ok "9")))
 end
 
 let () =
@@ -81,7 +82,7 @@ let () =
             let cnx_timeout = 0.2
             let max_accepted = Some 1
         end in
-    let module R = RPC_Checks(Rpc.Tcp(TcpConfig)) in R.checks () ;
+    let module R = RPC_Checks (Rpc.Tcp (TcpConfig) (E)) in R.checks () ;
     Tcp_Checks.checks () ;
-    Event.loop ()
+    E.loop ()
 

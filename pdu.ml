@@ -1,9 +1,7 @@
 open Batteries
 open Ropic
 
-module L = Log.Info
-
-module Marshaller (T : BaseIOType) : PDU with module BaseIOType = T =
+module Marshaller (T : BaseIOType) (L : Log.S) : PDU with module BaseIOType = T =
 struct
     module BaseIOType = T
 
