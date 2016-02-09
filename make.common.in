@@ -48,6 +48,7 @@ $(XARCHIVE): $(SOURCES_MLI:.mli=.cmi) $(XOBJECTS) $(CLIB)
 	$(OCAMLOPT) -a -o $@ $(SYNTAX) -package "$(REQUIRES)" $(OCAMLOPTFLAGS) $(XOBJECTS) $(LIBS)
 install: $(ARCHIVE) $(XARCHIVE) install-spec
 	if test -f "$(XARCHIVE)" ; then extra="$(XARCHIVE) "`basename "$(XARCHIVE)" .cmxa`.a ; fi ; \
+	$(RM) all_tests.cmi ; \
 	@OCAMLFIND@ install "$(PKG_NAME)" *.cmi "$(ARCHIVE)" META $(EXTRA_INSTALL) $(CLIB) $$extra
 uninstall: uninstall-spec
 	@OCAMLFIND@ remove $(PKG_NAME)
