@@ -58,7 +58,7 @@ struct
     let host = Address.make "localhost" 21743
 
     let () =
-        let f w (a, b) = String.of_int (a+b) |> w in
+        let f _addr w (a, b) = String.of_int (a+b) |> w in
         RPC.serve host f
 
     let checks () =

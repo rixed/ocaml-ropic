@@ -12,6 +12,11 @@ struct
             { name = Unix.string_of_inet_addr ip ; port }
 end
 
+(* Retriable errors will be retried *)
+type 'a res = Ok of 'a
+            | Timeout
+            | Err of string
+
 module RPC =
 struct
     module type TYPES =
@@ -24,18 +29,17 @@ struct
     sig
         module Types : TYPES
 
-        (* Retriable errors will be retried *)
-        type rpc_res = Ok of Types.ret
-                     | Timeout
-                     | Err of string
-
         (* We favor event driven programming here *)
-        val call : ?timeout:float -> Address.t -> Types.arg -> (rpc_res -> unit) -> unit
+        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
         (* TODO: a call_multiple that allows several answers to be received. Useful to
          * implement pubsub *)
 
         (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
-        val serve : Address.t -> ((Types.ret -> unit) -> Types.arg -> unit) -> unit
+        (* First argument is the adress we want to serve from,
+         * Second is the query service funtion, which takes the remote address
+         * the query is coming from, the continuation, and the argument in last
+         * position for easier pattern matching. *)
+        val serve : Address.t -> (Address.t -> (Types.ret -> unit) -> Types.arg -> unit) -> unit
     end
 
     module type Maker = functor(Types : TYPES) -> (S with module Types = Types)

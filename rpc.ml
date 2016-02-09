@@ -26,10 +26,6 @@ module Tcp (Config : TCP_CONFIG) (Types : RPC.TYPES) : RPC.S with module Types =
 struct
     module Types = Types
 
-    type rpc_res = Ok of Types.ret
-                 | Timeout
-                 | Err of string
-
     type id = int
 
     module BaseIOType =
@@ -39,15 +35,15 @@ struct
     end
     module Srv_IOType = MakeIOType (BaseIOType)
     module Srv_Pdu = Pdu.Marshaller (Srv_IOType)
-    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (struct type t = unit end)
+    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (struct type t = Address.t end)
 
     open Config
 
     let serve h f =
-        let _shutdown = TcpServer.serve ~cnx_timeout ?max_accepted (string_of_int h.Address.port) ignore (fun () write input ->
+        let _shutdown = TcpServer.serve ~cnx_timeout ?max_accepted (string_of_int h.Address.port) identity (fun addr write input ->
             match input with
             | Srv_IOType.Value (id, v) ->
-                f (fun res -> write (Srv_IOType.Write (id, res))) v
+                f addr (fun res -> write (Srv_IOType.Write (id, res))) v
             | Srv_IOType.Timeout _
             | Srv_IOType.EndOfFile ->
                 write Srv_IOType.Close) in
@@ -68,7 +64,7 @@ struct
      *   backend). Since the hash of cnx is global and the id is global as well, we can imagine a query
      *   being answered by another server, which is cool or frightening.
      * - as a result, if we store several servers on this program they can share the same cnxs if they
-     *   speack to the same dest
+     *   speak to the same dest
      *)
     let cnxs = Hashtbl.create 31
     let continuations = Hashtbl.create 72
