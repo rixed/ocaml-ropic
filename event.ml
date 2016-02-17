@@ -20,7 +20,6 @@ struct
 end)
 let alerts = ref AlertHeap.empty
 
-type condition = (unit -> bool) * (unit -> unit)
 module type S =
 sig
   module L : Log.S
@@ -36,6 +35,7 @@ end
 module Make (L : Log.S) : S with module L = L =
 struct
   module L = L
+  type condition = (unit -> bool) * (unit -> unit)
   let conditions = ref ([] : condition list) (* test them each time anything happens *)
 
   let try_conditions () =
@@ -266,12 +266,35 @@ end =
 struct
     module BIO = BufferedIO (T) (Pdu) (E)
 
+    let print_addrinfo oc ai =
+        let open Unix in
+        let string_of_family = function
+            | PF_UNIX  -> "Unix"
+            | PF_INET  -> "IPv4"
+            | PF_INET6 -> "IPv6" in
+        let string_of_socktype = function
+            | SOCK_STREAM -> "stream"
+            | SOCK_DGRAM  -> "datagram"
+            | SOCK_RAW    -> "raw"
+            | SOCK_SEQPACKET -> "seqpacket" in
+        let string_of_proto p =
+            try (getprotobynumber p).p_name
+            with Not_found -> string_of_int p in
+        Printf.fprintf oc "%s:%s:%s %s"
+            (string_of_family ai.ai_family)
+            (string_of_socktype ai.ai_socktype)
+            (string_of_proto ai.ai_protocol)
+            ai.ai_canonname
+
     let listen service =
         let open Unix in
-        match getaddrinfo "" service [AI_SOCKTYPE SOCK_STREAM; AI_PASSIVE;] with
+        match getaddrinfo "" service [
+            AI_SOCKTYPE SOCK_STREAM ;
+            AI_PASSIVE ;
+            AI_CANONNAME ] with
         | ai::_ ->
-            E.L.info "Listening on %s" service ;
-            let sock = socket PF_INET SOCK_STREAM 0 in
+            E.L.info "Listening on %a" print_addrinfo ai ;
+            let sock = socket ai.ai_family ai.ai_socktype 0 in
             setsockopt sock SO_REUSEADDR true ;
             setsockopt sock SO_KEEPALIVE true ;
             bind sock ai.ai_addr ;
