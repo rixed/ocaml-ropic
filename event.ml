@@ -160,11 +160,7 @@ struct
             false
         )
 
-    let start ?cnx_timeout infd outfd value_cb =
-        let last_used = ref 0. in (* for timeouting *)
-        let reset_timeout_and f x =
-            last_used := Unix.gettimeofday () ;
-            f x in
+    let start infd outfd value_cb =
         let inbuf = Buffer.create 2000
         and outbuf = Buffer.create 2000
         and close_out = ref Nope and closed_in = ref false in
@@ -176,7 +172,6 @@ struct
                 Buffer.add_string outbuf
             | T.Close ->
                 if !close_out = Nope then close_out := ToDo in
-        let writer = reset_timeout_and writer in
         let buffer_is_empty b = Buffer.length b = 0 in
         let register_files (rfiles, wfiles, efiles) =
             (if !closed_in then rfiles else infd :: rfiles),
@@ -185,7 +180,7 @@ struct
         let process_files handler (rfiles, wfiles, _) =
             if List.mem infd rfiles then (
                 assert (not !closed_in) ; (* otherwise we were not in the select fileset *)
-                if try_read_value infd inbuf (reset_timeout_and value_cb) writer then (
+                if try_read_value infd inbuf value_cb writer then (
                     E.L.debug "infd is closed by peer" ;
                     closed_in := true ;
                     if infd <> outfd then (
@@ -197,12 +192,6 @@ struct
             if List.mem outfd wfiles then (
                 if not (buffer_is_empty outbuf) then
                     try_write_buf outbuf outfd) ;
-            Option.may (fun cnx_timeout ->
-                let now = Unix.gettimeofday () in
-                if now -. !last_used > cnx_timeout then (
-                    last_used := now ; (* reset cnx_timeout *)
-                    value_cb writer (Timeout now)))
-                cnx_timeout ;
             if !close_out = ToDo then (
                 E.L.debug "Closing outfd" ;
                 Unix.close outfd ;
@@ -243,22 +232,25 @@ let print_addrinfo oc ai =
         print_sockaddr ai.ai_addr
         ai.ai_canonname
 
-module TcpClient (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) :
+module type CLIENT =
 sig
+    module T : IOType
+
     (* [client "server.com" "http" reader] connect to server.com:80 and will send all read value to [reader]
      * function. The returned value is the writer function.
      * Notice that the reader is a callback, so this is different (and more complex) than the function call
      * abstraction. The advantage is that the main thread can do a remote call and proceed to something else
      * instead of being forced to wait for the response (event driven design). This also allows 0 or more than
-     * 1 return values.
-     * When timeouting, [reader] will be called with [EndOfFile] and input stream will be closed. You must
-     * still close output stream if you want to close the socket for good. *)
-    val client : ?cnx_timeout:float -> string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
-end =
+     * 1 return values. *)
+    val client : string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
+end
+
+module TcpClient (T : IOType)
+                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                 (E : S) : CLIENT with module T = T =
 struct
     module BIO = BufferedIO (T) (Pdu) (E)
+    module T = T
 
     let connect host service =
         let open Unix in
@@ -273,26 +265,28 @@ struct
                 E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
                 None)
 
-    let client ?cnx_timeout host service buf_reader =
+    let client host service buf_reader =
         try let fd = connect host service in
-            BIO.start ?cnx_timeout fd fd buf_reader
+            BIO.start fd fd buf_reader
         with Not_found ->
             failwith ("Cannot connect to "^ host ^":"^ service)
 end
 
-module TcpServer (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (Clt : sig type t end)
-                 (E : S) :
+module type SERVER =
 sig
+    module T : IOType
     (* [serve service new_clt callback] listen on port [service] and serve each query with [callback].
      * A shutdown function is returned that will stop the server from accepting new connections. *)
-    val serve : ?cnx_timeout:float -> ?max_accepted:int -> string ->
-                (Address.t -> Clt.t) ->
-                (Clt.t -> (T.write_cmd -> unit) -> T.read_result -> unit) ->
+    val serve : string ->
+                (Address.t -> (T.write_cmd -> unit) -> T.read_result -> unit) ->
                 (unit -> unit)
-end =
+end
+
+module TcpServer (T : IOType)
+                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                 (E : S) : SERVER with module T = T =
 struct
+    module T = T
     module BIO = BufferedIO (T) (Pdu) (E)
 
     let listen service =
@@ -315,14 +309,16 @@ struct
             failwith ("Cannot listen to "^ service)
         | fd -> fd
 
-    let serve ?cnx_timeout ?max_accepted service new_clt value_cb =
-        let accepted = ref 0 in
-        Option.may (fun n -> assert (n > 0)) max_accepted ;
+    let serve service value_cb =
+        let buf_writers = ref [] in (* all writer function to client cnxs *)
         let listen_fd = listen service in
-        let rec stop_listening () =
-            E.L.debug "Closing listening socket" ;
+        let rec shutdown () =
+            E.L.debug "Shutdown: Closing listening socket" ;
             Unix.close listen_fd ;
-            E.unregister handler
+            E.unregister handler ;
+            E.L.debug "Shutdown: Close all cnxs to clients" ;
+            List.iter (fun w -> w T.Close) !buf_writers ;
+            buf_writers := []
         (* We need a special kind of event handler to handle the listener fd:
          * one that accept when it's readable and that never write. *)
         and register_files (rfiles, wfiles, efiles) =
@@ -331,30 +327,22 @@ struct
             if List.mem listen_fd rfiles then (
                 let client_fd, sockaddr = Unix.accept listen_fd in
                 E.L.info "Accepting new cnx %a" Log.file client_fd ;
-                incr accepted ;
-                (match max_accepted with
-                    | Some n when !accepted >= n -> stop_listening ()
-                    | _ -> ()) ;
-                let clt = new_clt (Address.of_sockaddr sockaddr) in
-                let _buf_writer = BIO.start ?cnx_timeout client_fd client_fd (value_cb clt) in
-                ()
+                let clt = Address.of_sockaddr sockaddr in
+                buf_writers := BIO.start client_fd client_fd (value_cb clt) :: !buf_writers
             )
         and handler = { register_files ; process_files } in
         E.register handler ;
-        stop_listening
+       shutdown 
 end
 
 let max_pdu_size = 60000
 
 module UdpClient (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) :
-sig
-    (* Same as for Tcp, although since it's unconnected closing the output
-     * stream is not required. *)
-    val client : string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
-end =
+                 (E : S) : CLIENT with module T = T =
 struct
+    module T = T
+
     let connect host service =
       match
         Unix.getaddrinfo host service [
@@ -413,15 +401,10 @@ end
 
 module UdpServer (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) :
-sig
-    (* This one is stateless so we do not try to materialize clients.
-     * Apart from that, same as for Tcp. *)
-    val serve : string ->
-                ((T.write_cmd -> unit) -> T.read_result -> unit) ->
-                (unit -> unit)
-end =
+                 (E : S) : SERVER with module T = T =
 struct
+    module T = T
+
     let bind service =
         let open Unix in
         match
@@ -469,7 +452,7 @@ struct
                     if sz' <> sz then E.L.warn "Received %d bytes instead of %d" sz sz' else
                     (match Pdu.of_string recv_buffer 0 sz' with
                     | None -> E.L.warn "Cannot read value from %d bytes" sz'
-                    | Some v -> value_cb (dgram_writer peer_addr) (T.Value v)))
+                    | Some v -> value_cb (Address.of_sockaddr peer_addr) (dgram_writer peer_addr) (T.Value v)))
               )
           and handler = { register_files ; process_files } in
           E.register handler ;

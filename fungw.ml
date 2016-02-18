@@ -137,7 +137,7 @@ struct
               mutable condition : Condition.t * Condition.t ;
               mutable closed : bool }
     end
-    module TcpServer = Event.TcpServer (IOType) (Pdu.Blobber) (Clt) (E)
+    module TcpServer = Event.TcpServer (IOType) (Pdu.Blobber) (E)
     module TcpClient = Event.TcpClient (IOType) (Pdu.Blobber) (E)
 
     type t =
@@ -207,14 +207,14 @@ struct
         | _ ->
             invalid_arg str
 
-    let start ?cnx_timeout t =
+    let start t =
         let server_to_client clt _writer = function
             | IOType.Value str ->
                 Queue.add (IOType.Write str) (fst clt.Clt.queues).q
-            | IOType.Timeout _now -> ()
             | IOType.EndOfFile ->
                 Queue.add IOType.Close (fst clt.Clt.queues).q in
-        let client_to_server clt to_client v =
+        let client_to_server clt_addr to_client v =
+            let clt = make_client t clt_addr in
             (* We can't know the to_client writer before some client actually connect
              * So we save it now. *)
             (match (fst clt.Clt.queues).Clt.writer with
@@ -223,15 +223,14 @@ struct
                 (fst clt.Clt.queues).Clt.writer <- Some to_client ;
                 (* Now start a new connection to the server for this client *)
                 let to_server =
-                    TcpClient.client ?cnx_timeout t.forward_to.name (string_of_int t.forward_to.port) (server_to_client clt) in
+                    TcpClient.client t.forward_to.name (string_of_int t.forward_to.port) (server_to_client clt) in
                 (snd clt.queues).Clt.writer <- Some to_server) ;
             match v with
             | IOType.Value str ->
                 Queue.add (IOType.Write str) (snd clt.Clt.queues).q
-            | IOType.Timeout _now -> ()
             | IOType.EndOfFile ->
                 Queue.add IOType.Close (snd clt.Clt.queues).q in
-        let shutdown = TcpServer.serve ?cnx_timeout t.listen_to (make_client t) client_to_server in
+        let shutdown = TcpServer.serve t.listen_to client_to_server in
         shutdown
 end
 

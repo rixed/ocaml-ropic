@@ -37,8 +37,9 @@ struct
         (* First argument is the adress we want to serve from,
          * Second is the query service funtion, which takes the remote address
          * the query is coming from, the continuation, and the argument in last
-         * position for easier pattern matching. *)
-        val serve : Address.t -> (Address.t -> (Types.ret -> unit) -> Types.arg -> unit) -> unit
+         * position for easier pattern matching.
+         * Returns a shutdown function. *)
+        val serve : Address.t -> (Address.t -> (Types.ret -> unit) -> Types.arg -> unit) -> (unit -> unit)
     end
 
     module type Maker = functor (Types : TYPES) -> (S with module Types = Types)
@@ -53,14 +54,14 @@ end
 module type IOType =
 sig
     include BaseIOType
-    type read_result = Value of t_read | Timeout of float | EndOfFile
+    type read_result = Value of t_read | EndOfFile
     type write_cmd = Write of t_write | Close
 end
 
 module MakeIOType (B : BaseIOType) : IOType with type t_read = B.t_read and type t_write = B.t_write =
 struct
     include B
-    type read_result = Value of t_read | Timeout of float | EndOfFile
+    type read_result = Value of t_read | EndOfFile
     type write_cmd = Write of t_write | Close
 end
 

@@ -10,20 +10,8 @@ let next_id =
     let n = ref 0 in
     fun () -> incr n ; !n
 
-module type TCP_CONFIG =
-sig
-    val cnx_timeout : float
-    val max_accepted : int option
-end
-
-module DefaultTcpConfig : TCP_CONFIG =
-struct
-    let cnx_timeout = 1.
-    let max_accepted = None
-end
-
-module Tcp (Config : TCP_CONFIG)
-           (E : Event.S)
+(* TODO: Given Tcp and Udp works exactly the same, make this a functor from Event.SERVER and Event.CLIENT (or a functor from a ServerMaker functor, so that we give it the IOTypes and Pdu and E we already have *)
+module Tcp (E : Event.S)
            (Types : RPC.TYPES) :
     RPC.S with module Types = Types =
 struct
@@ -38,20 +26,17 @@ struct
     end
     module Srv_IOType = MakeIOType (BaseIOType)
     module Srv_Pdu = Pdu.Marshaller (Srv_IOType) (E.L)
-    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (struct type t = Address.t end) (E)
-
-    open Config
+    module TcpServer = Event.TcpServer (Srv_IOType) (Srv_Pdu) (E)
 
     let serve h f =
-        let _shutdown = TcpServer.serve ~cnx_timeout ?max_accepted (string_of_int h.Address.port) identity (fun addr write input ->
+        TcpServer.serve (string_of_int h.Address.port) (fun addr write input ->
             match input with
             | Srv_IOType.Value (id, v) ->
                 f addr (fun res -> write (Srv_IOType.Write (id, res))) v
-            | Srv_IOType.Timeout _
             | Srv_IOType.EndOfFile ->
-                write Srv_IOType.Close) in
-        () (* we keep serving until we die *)
+                write Srv_IOType.Close)
 
+    (* Reverse the types and build the client: *)
     module Clt_IOType = MakeIOTypeRev (BaseIOType)
     module Clt_Pdu = Pdu.Marshaller (Clt_IOType) (E.L)
     module TcpClient = Event.TcpClient (Clt_IOType) (Clt_Pdu) (E)
@@ -74,7 +59,7 @@ struct
 
     (* timeout continuations *)
     let try_timeout id =
-        match  Hashtbl.find_option continuations id with
+        match Hashtbl.find_option continuations id with
         | Some k ->
             E.L.debug "Timeouting message id %d" id ;
             Hashtbl.remove continuations id ;
@@ -88,7 +73,7 @@ struct
             | None ->
                 (* connect to the server *)
                 E.L.debug "Need a new connection to %s" (Address.to_string h) ;
-                let w = TcpClient.client ~cnx_timeout h.Address.name (string_of_int h.Address.port) (fun write input ->
+                let w = TcpClient.client h.Address.name (string_of_int h.Address.port) (fun write input ->
                     match input with
                     | Clt_IOType.Value (id, v) ->
                         (* Note: we can't modify continuations in place because we'd
@@ -101,8 +86,6 @@ struct
                             E.L.debug "Continuing message id %d" id ;
                             k (Ok v) ;
                             Hashtbl.remove continuations id)
-                    | Clt_IOType.Timeout _now -> (* called when the underlying IO had nothing to read for too long *)
-                        ()
                     | Clt_IOType.EndOfFile ->
                         (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
                         E.L.info "Closing cnx to %s" (Address.to_string h) ;
@@ -115,5 +98,83 @@ struct
         E.pause timeout (fun () -> try_timeout id) ;
         Hashtbl.add continuations id k ;
         writer (Write (id, v))
+end
 
+module Udp (E : Event.S)
+           (Types : RPC.TYPES) :
+    RPC.S with module Types = Types =
+struct
+    module Types = Types
+
+    type id = int
+
+    module BaseIOType =
+    struct
+        type t_read = id * Types.arg
+        type t_write = id * Types.ret
+    end
+    module Srv_IOType = MakeIOType (BaseIOType)
+    module Srv_Pdu = Pdu.Marshaller (Srv_IOType) (E.L)
+    module UdpServer = Event.UdpServer (Srv_IOType) (Srv_Pdu) (E)
+
+    let serve h f =
+        UdpServer.serve (string_of_int h.Address.port) (fun addr write input ->
+            match input with
+            | Srv_IOType.Value (id, v) ->
+                f addr (fun res -> write (Srv_IOType.Write (id, res))) v
+            | Srv_IOType.EndOfFile ->
+                write Srv_IOType.Close)
+
+    (* Reverse the types and build the client: *)
+    module Clt_IOType = MakeIOTypeRev (BaseIOType)
+    module Clt_Pdu = Pdu.Marshaller (Clt_IOType) (E.L)
+    module UdpClient = Event.UdpClient (Clt_IOType) (Clt_Pdu) (E)
+
+    (* Compared to TCP, our "cnxs" are writer functions that saves us from
+     * name resolution, but of course there are no round-trip connection
+     * process involved. *)
+    let cnxs = Hashtbl.create 31
+    let continuations = Hashtbl.create 72
+
+    (* timeout continuations *)
+    let try_timeout id =
+        match Hashtbl.find_option continuations id with
+        | Some k ->
+            E.L.debug "Timeouting message id %d" id ;
+            Hashtbl.remove continuations id ;
+            k (Err "timeout")
+        | None -> ()
+
+    let call ?(timeout=0.5) h v k =
+        let writer =
+            match Hashtbl.find_option cnxs h with
+            | Some w -> w
+            | None ->
+                (* connect to the server *)
+                E.L.debug "Need a new writer to %s" (Address.to_string h) ;
+                let w = UdpClient.client h.Address.name (string_of_int h.Address.port) (fun write input ->
+                    match input with
+                    | Clt_IOType.Value (id, v) ->
+                        (* Note: we can't modify continuations in place because we'd
+                         * have to call write before returning to modify_opt, and write
+                         * can itself update the hash. *)
+                        (match Hashtbl.find_option continuations id with
+                        | None ->
+                            E.L.error "No continuation for message id %d (already timeouted?)" id
+                        | Some k ->
+                            E.L.debug "Continuing message id %d" id ;
+                            k (Ok v) ;
+                            Hashtbl.remove continuations id)
+                    | Clt_IOType.EndOfFile ->
+                        (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
+                        E.L.info "Closing datagram 'cnx' to %s" (Address.to_string h) ;
+                        write Close ;
+                        Hashtbl.remove cnxs h) in
+                Hashtbl.add cnxs h w ;
+                w in
+        let id = next_id () in
+        E.L.debug "Saving continuation for message id %d" id ;
+        E.pause timeout (fun () -> try_timeout id) ;
+        Hashtbl.add continuations id k ;
+        writer (Write (id, v))
 end

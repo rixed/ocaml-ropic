@@ -23,9 +23,7 @@ struct
     let checks () =
         let service_port = "31142" in
         let stop_listening = ref ignore in
-        let server respond = function
-            | SrvT.Timeout _ ->
-                OUnit2.assert_failure "Server received timeout"
+        let server _addr respond = function
             | SrvT.EndOfFile ->
                 OUnit2.assert_failure "Server received EOF"
             | SrvT.Value s ->
@@ -37,8 +35,6 @@ struct
         let test_str = "glop glop" in
         let send = Clt.client "localhost" service_port (fun w res ->
             match res with
-            | CltT.Timeout _ ->
-                OUnit2.assert_failure "Client received timeout"
             | CltT.EndOfFile ->
                 OUnit2.assert_failure "Client received EOF"
             | CltT.Value l ->
@@ -63,24 +59,22 @@ struct
     module Clt = Event.TcpClient (CltT) (Clt_Pdu) (E)
     module SrvT = MakeIOTypeRev (BaseIOType)
     module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
-    module Srv = Event.TcpServer (SrvT) (Srv_Pdu) (struct type t = unit end) (E)
+    module Srv = Event.TcpServer (SrvT) (Srv_Pdu) (E)
     let checks () =
         let idx = ref 0 in
         let tests = [| "hello" ; "glop" ; "" |] in
         let service_port = "31142" in
         let stop_listening = ref ignore in
-        let server () w = function
-            | SrvT.Timeout _
+        let server _addr w = function
             | SrvT.EndOfFile ->
                 w SrvT.Close ;
                 !stop_listening ()
             | SrvT.Value s ->
                 L.debug "Serving string.length for str='%s'" s ;
                 SrvT.Write (String.length s) |> w in
-        stop_listening := Srv.serve service_port ignore server ;
+        stop_listening := Srv.serve service_port server ;
         let send = Clt.client "localhost" service_port (fun _w res ->
             match res with
-            | CltT.Timeout _
             | CltT.EndOfFile -> () (* we already closed at the beginning *)
             | CltT.Value l ->
                 OUnit2.assert_equal ~msg:"String length" l (String.length tests.(!idx)) ;
@@ -102,9 +96,11 @@ struct
 
     let host = Address.make "localhost" 21743
 
+    let shutdown = ref ignore
+
     let () =
         let f _addr w (a, b) = String.of_int (a+b) |> w in
-        RPC.serve host f
+        shutdown := RPC.serve host f
 
     let checks () =
         RPC.call host (0, 1) (fun r ->
@@ -116,17 +112,12 @@ struct
             (* And we can call an RPC from an answer *)
             RPC.call host (4, 5) (fun r ->
                 L.debug "Test RPC(4,5)" ;
-                OUnit2.assert_equal ~msg:"RPC answer is OK, 9" r (Ok "9")))
+                OUnit2.assert_equal ~msg:"RPC answer is OK, 9" r (Ok "9") ;
+            !shutdown ()))
 end
 
 let () =
-    let module TcpConfig =
-        struct
-            include Rpc.DefaultTcpConfig
-            let cnx_timeout = 0.2
-            let max_accepted = Some 1
-        end in
-    let module R = RPC_Checks (Rpc.Tcp (TcpConfig) (E)) in R.checks () ;
+    let module R = RPC_Checks (Rpc.Tcp (E)) in R.checks () ;
     Udp_Checks.checks () ;
     Tcp_Checks.checks () ;
     E.loop ()
