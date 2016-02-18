@@ -33,7 +33,7 @@ struct
   let date fmt d =
     let open Unix in
     let tm = localtime d in
-    Printf.fprintf fmt "%04d-%02d-%02d %02dh%02dm%02d.03%ds"
+    Printf.fprintf fmt "%04d-%02d-%02d %02dh%02dm%02d.%03ds"
       (tm.tm_year + 1900)
       (tm.tm_mon + 1)
       tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
