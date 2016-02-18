@@ -245,6 +245,12 @@ sig
     val client : string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
 end
 
+module type CLIENT_MAKER =
+  functor (T : IOType)
+          (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+          (E : S) ->
+          CLIENT with module T = T
+
 module TcpClient (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
                  (E : S) : CLIENT with module T = T =
@@ -281,6 +287,12 @@ sig
                 (Address.t -> (T.write_cmd -> unit) -> T.read_result -> unit) ->
                 (unit -> unit)
 end
+
+module type SERVER_MAKER =
+  functor (T : IOType)
+          (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+          (E : S) ->
+          SERVER with module T = T
 
 module TcpServer (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
