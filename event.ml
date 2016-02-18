@@ -215,6 +215,34 @@ struct
         writer
 end
 
+let print_sockaddr oc addr =
+    let open Unix in
+    match addr with
+    | ADDR_UNIX file -> Printf.fprintf oc "UNIX:%s" file
+    | ADDR_INET (addr, port) ->
+      Printf.fprintf oc "%s:%d" (string_of_inet_addr addr) port
+
+let print_addrinfo oc ai =
+    let open Unix in
+    let string_of_family = function
+        | PF_UNIX  -> "Unix"
+        | PF_INET  -> "IPv4"
+        | PF_INET6 -> "IPv6" in
+    let string_of_socktype = function
+        | SOCK_STREAM -> "stream"
+        | SOCK_DGRAM  -> "datagram"
+        | SOCK_RAW    -> "raw"
+        | SOCK_SEQPACKET -> "seqpacket" in
+    let string_of_proto p =
+        try (getprotobynumber p).p_name
+        with Not_found -> string_of_int p in
+    Printf.fprintf oc "%s:%s:%s %a (%s)"
+        (string_of_family ai.ai_family)
+        (string_of_socktype ai.ai_socktype)
+        (string_of_proto ai.ai_protocol)
+        print_sockaddr ai.ai_addr
+        ai.ai_canonname
+
 module TcpClient (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
                  (E : S) :
@@ -236,9 +264,10 @@ struct
         let open Unix in
         getaddrinfo host service [AI_SOCKTYPE SOCK_STREAM ; AI_CANONNAME ] |>
         List.find_map (fun ai ->
-            E.L.info "Connecting to %s:%s" ai.ai_canonname service ;
+            E.L.debug "Connecting to %a" print_addrinfo ai ;
             try let sock = socket ai.ai_family ai.ai_socktype ai.ai_protocol in
                 Unix.connect sock ai.ai_addr ;
+                E.L.info "Connected to %a" print_addrinfo ai ;
                 Some sock
             with exn ->
                 E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
@@ -266,42 +295,25 @@ end =
 struct
     module BIO = BufferedIO (T) (Pdu) (E)
 
-    let print_addrinfo oc ai =
-        let open Unix in
-        let string_of_family = function
-            | PF_UNIX  -> "Unix"
-            | PF_INET  -> "IPv4"
-            | PF_INET6 -> "IPv6" in
-        let string_of_socktype = function
-            | SOCK_STREAM -> "stream"
-            | SOCK_DGRAM  -> "datagram"
-            | SOCK_RAW    -> "raw"
-            | SOCK_SEQPACKET -> "seqpacket" in
-        let string_of_proto p =
-            try (getprotobynumber p).p_name
-            with Not_found -> string_of_int p in
-        Printf.fprintf oc "%s:%s:%s %s"
-            (string_of_family ai.ai_family)
-            (string_of_socktype ai.ai_socktype)
-            (string_of_proto ai.ai_protocol)
-            ai.ai_canonname
-
     let listen service =
         let open Unix in
-        match getaddrinfo "" service [
-            AI_SOCKTYPE SOCK_STREAM ;
-            AI_PASSIVE ;
-            AI_CANONNAME ] with
-        | ai::_ ->
-            E.L.info "Listening on %a" print_addrinfo ai ;
-            let sock = socket ai.ai_family ai.ai_socktype 0 in
-            setsockopt sock SO_REUSEADDR true ;
-            setsockopt sock SO_KEEPALIVE true ;
-            bind sock ai.ai_addr ;
-            listen sock 5 ;
-            sock
-        | [] ->
+        match
+          getaddrinfo "" service [
+              AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
+          List.find_map (fun ai ->
+              try E.L.debug "Trying to listen on %a" print_addrinfo ai ;
+                  let sock = socket ai.ai_family ai.ai_socktype 0 in
+                  setsockopt sock SO_REUSEADDR true ;
+                  setsockopt sock SO_KEEPALIVE true ;
+                  bind sock ai.ai_addr ;
+                  listen sock 5 ;
+                  E.L.info "Listening on %a" print_addrinfo ai ;
+                  Some sock
+              with _ ->
+                  None) with
+        | exception Not_found ->
             failwith ("Cannot listen to "^ service)
+        | fd -> fd
 
     let serve ?cnx_timeout ?max_accepted service new_clt value_cb =
         let accepted = ref 0 in
@@ -330,5 +342,137 @@ struct
         and handler = { register_files ; process_files } in
         E.register handler ;
         stop_listening
+end
+
+let max_pdu_size = 60000
+
+module UdpClient (T : IOType)
+                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                 (E : S) :
+sig
+    (* Same as for Tcp, although since it's unconnected closing the output
+     * stream is not required. *)
+    val client : string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
+end =
+struct
+    let connect host service =
+      match
+        Unix.getaddrinfo host service [
+          AI_SOCKTYPE SOCK_DGRAM ; AI_CANONNAME ] |>
+        List.find_map (fun ai ->
+          E.L.debug "Connecting to %a" print_addrinfo ai ;
+          try let sock = Unix.socket ai.ai_family ai.ai_socktype ai.ai_protocol in
+              Unix.connect sock ai.ai_addr ;
+              E.L.debug "Will send datagrams to %a" print_addrinfo ai ;
+              Some sock
+          with exn ->
+              E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
+              None) with
+      | exception Not_found ->
+        failwith ("Cannot resolve "^ host ^":"^ service)
+      | sock -> sock
+
+    let client host service value_cb =
+        let sock = connect host service in
+        let closed = ref false in
+        let rec dgram_writer = function
+          | T.Close ->
+            assert (not !closed) ; (* punish double close *)
+            closed := true ;
+            E.unregister handler
+          | T.Write v ->
+            assert (not !closed) ;
+            let data = Pdu.to_string v in
+            let len = String.length data in
+            E.L.debug "Send datagram of %d bytes" len ;
+            let sz = Unix.send sock data 0 len [] in
+            if sz <> len then E.L.error "Sent only %d bytes out of %d. I'm sooory!" sz len
+        and register_files (rfiles, wfiles, efiles) =
+          (* Given we send the datagrams directly in the writer, we
+           * do not need to monitor sock for writing. *)
+          (if !closed then rfiles else sock :: rfiles),
+          wfiles, efiles
+        and process_files =
+          let recv_buffer = String.make max_pdu_size 'X' in
+          fun _handler (rfiles, _, _) ->
+            if List.mem sock rfiles then (
+              let sz = Unix.recv sock recv_buffer 0 max_pdu_size [] in
+              if sz = 0 then
+                E.L.warn "Lost connection to server" else
+              (match Pdu.has_value recv_buffer 0 sz with
+              | None -> E.L.warn "Discarding datagram of %d bytes" sz
+              | Some sz' ->
+                if sz <> sz' then E.L.warn "Received garbage (%d bytes instead of %d)" sz' sz else
+                (match Pdu.of_string recv_buffer 0 sz' with
+                | None -> E.L.warn "Cannot read value from datagram of %d bytes" sz'
+                | Some v -> value_cb dgram_writer (T.Value v))))
+        and handler = { register_files ; process_files } in
+        E.register handler ;
+        dgram_writer
+end
+
+module UdpServer (T : IOType)
+                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
+                 (E : S) :
+sig
+    (* This one is stateless so we do not try to materialize clients.
+     * Apart from that, same as for Tcp. *)
+    val serve : string ->
+                ((T.write_cmd -> unit) -> T.read_result -> unit) ->
+                (unit -> unit)
+end =
+struct
+    let bind service =
+        let open Unix in
+        match
+          getaddrinfo "" service [
+              AI_SOCKTYPE SOCK_DGRAM ; AI_PASSIVE ; AI_CANONNAME ] |>
+          List.find_map (fun ai ->
+              try E.L.debug "Trying to bind to %a" print_addrinfo ai ;
+                  let sock = socket ai.ai_family ai.ai_socktype 0 in
+                  setsockopt sock SO_REUSEADDR true ;
+                  setsockopt sock SO_KEEPALIVE true ;
+                  bind sock ai.ai_addr ;
+                  E.L.info "Bound to %a" print_addrinfo ai ;
+                  Some sock
+              with _ ->
+                  None) with
+        | exception Not_found ->
+            failwith ("Cannot listen to "^ service)
+        | fd -> fd
+
+    let serve =
+        let recv_buffer = String.make max_pdu_size 'X' in
+        fun service value_cb ->
+          let sock = bind service in
+          let rec stop_listening () =
+              E.L.debug "Closing server socket" ;
+              Unix.close sock ;
+              E.unregister handler
+          and dgram_writer dest_addr = function
+            | T.Close -> ()
+            | T.Write v ->
+              let data = Pdu.to_string v in
+              let len = String.length data in
+              E.L.debug "Send datagram of %d bytes to %a" len print_sockaddr dest_addr ;
+              let sz = Unix.sendto sock data 0 len [] dest_addr in
+              if sz <> len then E.L.error "Sent only %d bytes out of %d. I'm sooory!" sz len
+          and register_files (rfiles, wfiles, efiles) =
+              sock :: rfiles, wfiles, efiles
+          and process_files _handler (rfiles, _, _) =
+              if List.mem sock rfiles then (
+                  let sz, peer_addr = Unix.recvfrom sock recv_buffer 0 max_pdu_size [] in
+                  E.L.debug "Received a datagram of %d bytes from %a" sz print_sockaddr peer_addr ;
+                  (match Pdu.has_value recv_buffer 0 sz with
+                  | None -> E.L.warn "Received %d bytes of garbage" sz
+                  | Some sz' ->
+                    if sz' <> sz then E.L.warn "Received %d bytes instead of %d" sz sz' else
+                    (match Pdu.of_string recv_buffer 0 sz' with
+                    | None -> E.L.warn "Cannot read value from %d bytes" sz'
+                    | Some v -> value_cb (dgram_writer peer_addr) (T.Value v)))
+              )
+          and handler = { register_files ; process_files } in
+          E.register handler ;
+          stop_listening
 end
 

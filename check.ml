@@ -4,16 +4,60 @@ open Ropic
 module L = Log.Debug (Log.ToStdout)
 module E = Event.Make (L)
 
+(* Check UdpClient *)
+
+module Udp_Checks =
+struct
+    (* We simulate an echo server *)
+    module BaseIOType =
+    struct
+        type t_write = string
+        type t_read = string
+    end
+    module CltT = MakeIOType (BaseIOType)
+    module Clt_Pdu = Pdu.Marshaller(CltT) (L)
+    module Clt = Event.UdpClient (CltT) (Clt_Pdu) (E)
+    module SrvT = MakeIOTypeRev (BaseIOType)
+    module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
+    module Srv = Event.UdpServer (SrvT) (Srv_Pdu) (E)
+    let checks () =
+        let service_port = "31142" in
+        let stop_listening = ref ignore in
+        let server respond = function
+            | SrvT.Timeout _ ->
+                OUnit2.assert_failure "Server received timeout"
+            | SrvT.EndOfFile ->
+                OUnit2.assert_failure "Server received EOF"
+            | SrvT.Value s ->
+                L.debug "Echoing string '%s'" s ;
+                respond (SrvT.Write s) ;
+                !stop_listening () in
+        stop_listening := Srv.serve service_port server ;
+
+        let test_str = "glop glop" in
+        let send = Clt.client "localhost" service_port (fun w res ->
+            match res with
+            | CltT.Timeout _ ->
+                OUnit2.assert_failure "Client received timeout"
+            | CltT.EndOfFile ->
+                OUnit2.assert_failure "Client received EOF"
+            | CltT.Value l ->
+                OUnit2.assert_equal ~msg:"String equals" l test_str ;
+                L.debug "Received echo of '%s' = '%s'" test_str l ;
+                w CltT.Close) in
+        send (CltT.Write test_str) ;
+end
+
 (* Check TcpClient *)
 
 module Tcp_Checks =
 struct
+    (* We simulate a 'string-length' service: client sends string and read their length *)
     module BaseIOType =
     struct
         type t_write = string
         type t_read = int
     end
-    (* We simulate a 'string-length' service: client sends string and read their length *)
     module CltT = MakeIOType (BaseIOType)
     module Clt_Pdu = Pdu.Marshaller(CltT) (L)
     module Clt = Event.TcpClient (CltT) (Clt_Pdu) (E)
@@ -83,6 +127,7 @@ let () =
             let max_accepted = Some 1
         end in
     let module R = RPC_Checks (Rpc.Tcp (TcpConfig) (E)) in R.checks () ;
+    Udp_Checks.checks () ;
     Tcp_Checks.checks () ;
     E.loop ()
 
