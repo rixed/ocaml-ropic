@@ -16,4 +16,3 @@ fungw
 *.o
 *.cmo
 all_tests.ml
-configure

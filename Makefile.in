@@ -46,3 +46,4 @@ install-spec:
 fungw: fungw.opt
 	ln -f $< $@
 
+uninstall-spec:

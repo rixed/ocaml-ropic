@@ -1,4 +1,5 @@
 (* All signatures for the whole library *)
+open Batteries
 
 module Address =
 struct
@@ -6,6 +7,7 @@ struct
                port : int }
     let make name port = { name ; port }
     let to_string t = t.name ^":"^ string_of_int t.port
+    let print oc t = String.print oc (to_string t)
     let of_sockaddr = function
         | Unix.ADDR_UNIX _fname -> failwith "TODO"
         | Unix.ADDR_INET (ip, port) ->
