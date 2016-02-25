@@ -6,6 +6,7 @@ struct
     type t = { name : string ;
                port : int }
     let make name port = { name ; port }
+    let of_string s = Scanf.sscanf s "%s@:%d" make
     let to_string t = t.name ^":"^ string_of_int t.port
     let print oc t = String.print oc (to_string t)
     let of_sockaddr = function
@@ -36,8 +37,8 @@ struct
          * implement pubsub *)
 
         (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
-        (* First argument is the adress we want to serve from,
-         * Second is the query service funtion, which takes the remote address
+        (* First argument is the address we want to serve from,
+         * Second is the query service function, which takes the remote address
          * the query is coming from, the continuation, and the argument in last
          * position for easier pattern matching.
          * Returns a shutdown function. *)
