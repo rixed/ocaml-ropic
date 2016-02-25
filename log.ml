@@ -4,15 +4,9 @@ type ('a, 'b) printer = ('a, 'b BatInnerIO.output, unit, unit, unit, unit) Batte
 
 module type S =
 sig
-  (* log level >= 1 *)
-  val panic : ('a, 'b) printer
-  (* log level >= 2 *)
   val error : ('a, 'b) printer
-  (* log level >= 3 *)
   val warn : ('a, 'b) printer
-  (* log level >= 4 *)
   val info : ('a, 'b) printer
-  (* log level >= 5 *)
   val debug : ('a, 'b) printer
 end
 
@@ -46,10 +40,6 @@ end
 
 module Debug (Base : BASE) : S =
 struct
-  let panic fmt = 
-    Base.print fmt ;
-    exit 1
-
   let error = Base.print
   let warn =  Base.print
   let info =  Base.print
@@ -58,10 +48,6 @@ end
 
 module Info (Base : BASE) : S =
 struct
-  let panic fmt = 
-    Base.print fmt ;
-    exit 1
-
   let error = Base.print
   let warn =  Base.print
   let info =  Base.print
@@ -70,10 +56,6 @@ end
 
 module Warn (Base : BASE) : S =
 struct
-  let panic fmt = 
-    Base.print fmt ;
-    exit 1
-
   let error = Base.print
   let warn =  Base.print
   let info =  dont_print
@@ -82,10 +64,6 @@ end
 
 module Error (Base : BASE) : S =
 struct
-  let panic fmt = 
-    Base.print fmt ;
-    exit 1
-
   let error = Base.print
   let warn =  dont_print
   let info =  dont_print
