@@ -30,6 +30,10 @@ sig
   val pause : float -> (unit -> unit) -> unit
   val condition : (unit -> bool) -> (unit -> unit) -> unit
   val clear : unit -> unit
+  val retry_on_error : ?max_tries:int -> ?delay:float ->
+                       ?geom_backoff:float ->
+                       (('a Ropic.res -> unit) -> unit) ->
+                       ('a Ropic.res -> unit) -> unit
 end
 
 module Make (L : Log.S) : S with module L = L =
@@ -45,23 +49,30 @@ struct
               lst
           ) else cond::lst) [] !conditions
 
-  let select_once max_timeout handlers =
-      let collect_all_monitored_files handlers =
+  (* This can be changed (using register) at any point, esp. during file
+   * descriptors gathering or processing. So we want to read the original
+   * !handlers rather than pass its value to functions. *)
+  let handlers = ref []
+
+  let select_once max_timeout =
+      let collect_all_monitored_files () =
           List.fold_left (fun files handler ->
               handler.register_files files)
-              ([],[],[]) handlers
-      and process_all_monitored_files handlers files =
-          List.iter (fun handler -> handler.process_files handler files) handlers in
+              ([],[],[]) !handlers
+      and process_all_monitored_files files =
+          List.iter (fun handler -> handler.process_files handler files) !handlers in
 
       try_conditions () ;
       let open Unix in
-      let rfiles, wfiles, efiles = collect_all_monitored_files handlers in
+      let rfiles, wfiles, efiles = collect_all_monitored_files () in
       let timeout =
           if AlertHeap.size !alerts = 0 then max_timeout else
           let next_time, _ = AlertHeap.find_min !alerts in
           let dt = next_time -. Unix.gettimeofday () in
           min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
       (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
+      let ll = List.length in
+      L.debug "Selecting %d+%d+%d files..." (ll rfiles) (ll wfiles) (ll efiles) ;
       try let changed_files = select rfiles wfiles efiles timeout in
           (* alerts go first (take care that alert can add alerts and so on) *)
           let latest_alert = Unix.gettimeofday () +. 0.001 in
@@ -76,16 +87,15 @@ struct
           (* then file handlers *)
           let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
           L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
-          process_all_monitored_files handlers changed_files
+          process_all_monitored_files changed_files
       with Unix_error (EINTR,_,_) -> ()
-
-  let handlers = ref []
 
   let loop ?(timeout=1.) () =
       L.info "Entering event loop" ;
       while not (!handlers = [] && AlertHeap.size !alerts = 0) do
-          select_once timeout !handlers
-      done
+          select_once timeout
+      done ;
+      L.info "Exiting event loop"
 
   let register handler =
       handlers := handler :: !handlers ;
@@ -112,6 +122,19 @@ struct
       handlers := [] ;
       alerts := AlertHeap.empty ;
       conditions := []
+
+  (* Wrap f so that it would retry a few times on errors *)
+  let retry_on_error ?(max_tries=5) ?(delay=1.) ?(geom_backoff=3.)
+                     may_fail cont =
+    let rec retry nb_tries delay =
+      may_fail (function
+      | Err err when nb_tries < max_tries ->
+        let delay = delay *. geom_backoff in
+        L.info "Failed with %s, will retry in %.2f seconds" err delay ;
+        pause delay (fun () ->
+          retry (nb_tries + 1) delay)
+      | _ as x -> cont x) in
+    retry 1 delay
 end
 
 (* Buffered reader/writer of marshaled values of type IOType.t_read/IOType.t_write. *)
@@ -294,6 +317,12 @@ module type SERVER_MAKER =
           (E : S) ->
           SERVER with module T = T
 
+(* TODO: use proper sets rather than lists for fds *)
+let list_union l1 l2 =
+  List.fold_left (fun prev e1 ->
+      if List.mem e1 l2 then e1::prev else prev
+    ) [] l1
+
 module TcpServer (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
                  (E : S) : SERVER with module T = T =
@@ -303,30 +332,27 @@ struct
 
     let listen service =
         let open Unix in
-        match
-          getaddrinfo "" service [
-              AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
-          List.find_map (fun ai ->
-              try E.L.debug "Trying to listen on %a" print_addrinfo ai ;
-                  let sock = socket ai.ai_family ai.ai_socktype 0 in
-                  setsockopt sock SO_REUSEADDR true ;
-                  setsockopt sock SO_KEEPALIVE true ;
-                  bind sock ai.ai_addr ;
-                  listen sock 5 ;
-                  E.L.info "Listening on %a" print_addrinfo ai ;
-                  Some sock
-              with _ ->
-                  None) with
-        | exception Not_found ->
-            failwith ("Cannot listen to "^ service)
-        | fd -> fd
+        E.L.info "Listening to service %s" service ;
+        getaddrinfo "" service [
+            AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
+        List.filter_map (fun ai ->
+            try E.L.debug "Trying to listen on %a" print_addrinfo ai ;
+                let sock = socket ai.ai_family ai.ai_socktype 0 in
+                setsockopt sock SO_REUSEADDR true ;
+                setsockopt sock SO_KEEPALIVE true ;
+                bind sock ai.ai_addr ;
+                listen sock 5 ;
+                E.L.info "Listening on %a" print_addrinfo ai ;
+                Some sock
+            with _ ->
+                None)
 
     let serve service value_cb =
         let buf_writers = ref [] in (* all writer function to client cnxs *)
-        let listen_fd = listen service in
+        let listen_fds = listen service in
         let rec shutdown () =
-            E.L.debug "Shutdown: Closing listening socket" ;
-            Unix.close listen_fd ;
+            E.L.debug "Shutdown: Closing listening socket(s)" ;
+            List.iter Unix.close listen_fds ;
             E.unregister handler ;
             E.L.debug "Shutdown: Close all cnxs to clients" ;
             List.iter (fun w -> w T.Close) !buf_writers ;
@@ -334,9 +360,10 @@ struct
         (* We need a special kind of event handler to handle the listener fd:
          * one that accept when it's readable and that never write. *)
         and register_files (rfiles, wfiles, efiles) =
-            listen_fd :: rfiles, wfiles, efiles
+            List.rev_append listen_fds rfiles, wfiles, efiles
         and process_files _handler (rfiles, _, _) =
-            if List.mem listen_fd rfiles then (
+            list_union listen_fds rfiles |>
+            List.iter (fun listen_fd ->
                 let client_fd, sockaddr = Unix.accept listen_fd in
                 E.L.info "Accepting new cnx %a" Log.file client_fd ;
                 let clt = Address.of_sockaddr sockaddr in
@@ -396,16 +423,22 @@ struct
           let recv_buffer = String.make max_pdu_size 'X' in
           fun _handler (rfiles, _, _) ->
             if List.mem sock rfiles then (
-              let sz = Unix.recv sock recv_buffer 0 max_pdu_size [] in
-              if sz = 0 then
-                E.L.warn "Lost connection to server" else
-              (match Pdu.has_value recv_buffer 0 sz with
-              | None -> E.L.warn "Discarding datagram of %d bytes" sz
-              | Some sz' ->
-                if sz <> sz' then E.L.warn "Received garbage (%d bytes instead of %d)" sz' sz else
-                (match Pdu.of_string recv_buffer 0 sz' with
-                | None -> E.L.warn "Cannot read value from datagram of %d bytes" sz'
-                | Some v -> value_cb dgram_writer (T.Value v))))
+              let sz =
+                let open Unix in
+                try recv sock recv_buffer 0 max_pdu_size []
+                with Unix_error (ECONNREFUSED, _, _) -> 0 in
+              if sz = 0 then (
+                E.L.warn "No (more) connection to server"
+              ) else (
+                match Pdu.has_value recv_buffer 0 sz with
+                | None -> E.L.warn "Discarding datagram of %d bytes" sz
+                | Some sz' ->
+                  if sz <> sz' then E.L.warn "Received garbage (%d bytes instead of %d)" sz' sz else
+                  (match Pdu.of_string recv_buffer 0 sz' with
+                  | None -> E.L.warn "Cannot read value from datagram of %d bytes" sz'
+                  | Some v -> value_cb dgram_writer (T.Value v))
+              )
+            )
         and handler = { register_files ; process_files } in
         E.register handler ;
         dgram_writer
@@ -419,32 +452,29 @@ struct
 
     let bind service =
         let open Unix in
-        match
-          getaddrinfo "" service [
-              AI_SOCKTYPE SOCK_DGRAM ; AI_PASSIVE ; AI_CANONNAME ] |>
-          List.find_map (fun ai ->
-              try E.L.debug "Trying to bind to %a" print_addrinfo ai ;
-                  let sock = socket ai.ai_family ai.ai_socktype 0 in
-                  setsockopt sock SO_REUSEADDR true ;
-                  setsockopt sock SO_KEEPALIVE true ;
-                  bind sock ai.ai_addr ;
-                  E.L.info "Bound to %a" print_addrinfo ai ;
-                  Some sock
-              with _ ->
-                  None) with
-        | exception Not_found ->
-            failwith ("Cannot listen to "^ service)
-        | fd -> fd
+        E.L.info "Binding service %s" service ;
+        getaddrinfo "" service [
+            AI_SOCKTYPE SOCK_DGRAM ; AI_PASSIVE ; AI_CANONNAME ] |>
+        List.filter_map (fun ai ->
+            try E.L.debug "Trying to bind to %a" print_addrinfo ai ;
+                let sock = socket ai.ai_family ai.ai_socktype 0 in
+                setsockopt sock SO_REUSEADDR true ;
+                setsockopt sock SO_KEEPALIVE true ;
+                bind sock ai.ai_addr ;
+                E.L.info "Bound to %a" print_addrinfo ai ;
+                Some sock
+            with _ ->
+                None)
 
     let serve =
         let recv_buffer = String.make max_pdu_size 'X' in
         fun service value_cb ->
-          let sock = bind service in
+          let socks = bind service in
           let rec stop_listening () =
-              E.L.debug "Closing server socket" ;
-              Unix.close sock ;
+              E.L.debug "Closing server socket(s)" ;
+              List.iter Unix.close socks ;
               E.unregister handler
-          and dgram_writer dest_addr = function
+          and dgram_writer sock dest_addr = function
             | T.Close -> ()
             | T.Write v ->
               let data = Pdu.to_string v in
@@ -453,19 +483,19 @@ struct
               let sz = Unix.sendto sock data 0 len [] dest_addr in
               if sz <> len then E.L.error "Sent only %d bytes out of %d. I'm sooory!" sz len
           and register_files (rfiles, wfiles, efiles) =
-              sock :: rfiles, wfiles, efiles
+              List.rev_append socks rfiles, wfiles, efiles
           and process_files _handler (rfiles, _, _) =
-              if List.mem sock rfiles then (
-                  let sz, peer_addr = Unix.recvfrom sock recv_buffer 0 max_pdu_size [] in
-                  E.L.debug "Received a datagram of %d bytes from %a" sz print_sockaddr peer_addr ;
-                  (match Pdu.has_value recv_buffer 0 sz with
-                  | None -> E.L.warn "Received %d bytes of garbage" sz
-                  | Some sz' ->
-                    if sz' <> sz then E.L.warn "Received %d bytes instead of %d" sz sz' else
-                    (match Pdu.of_string recv_buffer 0 sz' with
-                    | None -> E.L.warn "Cannot read value from %d bytes" sz'
-                    | Some v -> value_cb (Address.of_sockaddr peer_addr) (dgram_writer peer_addr) (T.Value v)))
-              )
+            list_union socks rfiles |>
+            List.iter (fun sock ->
+                let sz, peer_addr = Unix.recvfrom sock recv_buffer 0 max_pdu_size [] in
+                E.L.debug "Received a datagram of %d bytes from %a" sz print_sockaddr peer_addr ;
+                (match Pdu.has_value recv_buffer 0 sz with
+                | None -> E.L.warn "Received %d bytes of garbage" sz
+                | Some sz' ->
+                  if sz' <> sz then E.L.warn "Received %d bytes instead of %d" sz sz' else
+                  (match Pdu.of_string recv_buffer 0 sz' with
+                  | None -> E.L.warn "Cannot read value from %d bytes" sz'
+                  | Some v -> value_cb (Address.of_sockaddr peer_addr) (dgram_writer sock peer_addr) (T.Value v))))
           and handler = { register_files ; process_files } in
           E.register handler ;
           stop_listening
