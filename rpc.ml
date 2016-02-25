@@ -67,6 +67,8 @@ struct
             k (Err "timeout")
         | None -> ()
 
+    (* timeout = 0 means we expect no answer other than an error if we cannot send.
+     * FIXME: a Maker wrapper for when the return type is unit, that will force this timeout to 0. *)
     let call ?(timeout=0.5) h v k =
         let writer =
             match Hashtbl.find_option cnxs h with
@@ -77,6 +79,9 @@ struct
                 let w = Client.client h.Address.name (string_of_int h.Address.port) (fun write input ->
                     match input with
                     | Clt_IOType.Value (id, v) ->
+                        if id = 0 then (
+                          E.L.error "Received an answer for a query that was not expecting one"
+                        ) else
                         (* Note: we can't modify continuations in place because we'd
                          * have to call write before returning to modify_opt, and write
                          * can itself update the hash. *)
@@ -94,10 +99,13 @@ struct
                         Hashtbl.remove cnxs h) in
                 Hashtbl.add cnxs h w ;
                 w in
-        let id = next_id () in
-        E.L.debug "Saving continuation for message id %d" id ;
-        E.pause timeout (fun () -> try_timeout id) ;
-        Hashtbl.add continuations id k ;
+        let id = if timeout > 0. then (
+          let id = next_id () in
+          E.L.debug "Saving continuation for message id %d" id ;
+          E.pause timeout (fun () -> try_timeout id) ;
+          Hashtbl.add continuations id k ;
+          id
+        ) else 0 in
         writer (Write (id, v))
 end
 
