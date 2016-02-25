@@ -25,7 +25,7 @@ sig
   module L : Log.S
   val unregister : handler -> unit
   val register : handler -> unit
-  val loop : ?timeout:float -> unit -> unit
+  val loop : ?timeout:float -> ?until:(unit -> bool) -> unit -> unit
   val register_timeout : (handler -> unit) -> unit
   val pause : float -> (unit -> unit) -> unit
   val condition : (unit -> bool) -> (unit -> unit) -> unit
@@ -90,10 +90,10 @@ struct
           process_all_monitored_files changed_files
       with Unix_error (EINTR,_,_) -> ()
 
-  let loop ?(timeout=1.) () =
+  let loop ?(timeout=1.) ?(until=fun () -> false) () =
       L.info "Entering event loop" ;
-      while not (!handlers = [] && AlertHeap.size !alerts = 0) do
-          select_once timeout
+      while not (until () || !handlers = [] && AlertHeap.size !alerts = 0) do
+          select_once timeout ;
       done ;
       L.info "Exiting event loop"
 
@@ -118,6 +118,7 @@ struct
       handlers := List.filter ((!=) handler) !handlers ;
       L.debug "Unregistering a handler, now got %d" (List.length !handlers)
 
+  (* TODO: an unregister_files operation to ask clients to close what they can? *)
   let clear () =
       handlers := [] ;
       alerts := AlertHeap.empty ;
