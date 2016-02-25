@@ -1,18 +1,18 @@
 open Batteries
 
-type ('a, 'b) printer = ('a, 'b BatInnerIO.output, unit, unit, unit, unit) Batteries.format6 -> 'a
+type 'a printer = ('a, unit BatInnerIO.output, unit, unit, unit, unit) Batteries.format6 -> 'a
 
 module type S =
 sig
-  val error : ('a, 'b) printer
-  val warn : ('a, 'b) printer
-  val info : ('a, 'b) printer
-  val debug : ('a, 'b) printer
+  val error : 'a printer
+  val warn : 'a printer
+  val info : 'a printer
+  val debug : 'a printer
 end
 
 module type BASE =
 sig
-  val print : ('a, 'b) printer
+  val print : 'a printer
 end
 
 let dont_print fmt = Printf.ifprintf stdout fmt
@@ -22,7 +22,7 @@ let file fmt fd =
   let fd = Obj.magic (fd : Unix.file_descr) in
   Printf.fprintf fmt "%d" fd
 
-module ToStdout =
+module ToFile (Conf : sig val oc : unit BatIO.output end) =
 struct
   let date fmt d =
     let open Unix in
@@ -34,9 +34,15 @@ struct
       (int_of_float ((mod_float d 1.) *. 1000.))
     
   let print fmt =
-    Printf.printf "%a: " date (Unix.gettimeofday ()) ;
-    Printf.printf (fmt ^^ "\n%!")
+    Printf.fprintf Conf.oc "%a: " date (Unix.gettimeofday ()) ;
+    Printf.fprintf Conf.oc (fmt ^^ "\n%!")
 end
+
+module ToStdout : BASE = ToFile (struct let oc = stdout end)
+
+module ToLogfile (Conf : sig val name : string end) : BASE = ToFile (struct
+  let oc = File.open_out ~mode:[`create;`append;`text] Conf.name
+end)
 
 module Debug (Base : BASE) : S =
 struct
