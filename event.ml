@@ -265,7 +265,7 @@ sig
      * abstraction. The advantage is that the main thread can do a remote call and proceed to something else
      * instead of being forced to wait for the response (event driven design). This also allows 0 or more than
      * 1 return values. *)
-    val client : string -> string -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
+    val client : Address.t -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
 end
 
 module type CLIENT_MAKER =
@@ -281,11 +281,10 @@ struct
     module BIO = BufferedIO (T) (Pdu) (E)
     module T = T
 
-    let connect host service =
+    let connect server =
         let open Unix in
-        getaddrinfo host service [AI_SOCKTYPE SOCK_STREAM ; AI_CANONNAME ] |>
+        getaddrinfo server.Address.name (string_of_int server.Address.port) [AI_SOCKTYPE SOCK_STREAM ; AI_CANONNAME ] |>
         List.find_map (fun ai ->
-            E.L.debug "Connecting to %a" print_addrinfo ai ;
             try let sock = socket ai.ai_family ai.ai_socktype ai.ai_protocol in
                 Unix.connect sock ai.ai_addr ;
                 E.L.info "Connected to %a" print_addrinfo ai ;
@@ -294,11 +293,11 @@ struct
                 E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
                 None)
 
-    let client host service buf_reader =
-        try let fd = connect host service in
+    let client server buf_reader =
+        try let fd = connect server in
             BIO.start fd fd buf_reader
         with Not_found ->
-            failwith ("Cannot connect to "^ host ^":"^ service)
+            failwith ("Cannot connect to "^ server.Address.name ^":"^ string_of_int server.Address.port)
 end
 
 module type SERVER =
@@ -306,7 +305,7 @@ sig
     module T : IOType
     (* [serve service new_clt callback] listen on port [service] and serve each query with [callback].
      * A shutdown function is returned that will stop the server from accepting new connections. *)
-    val serve : string ->
+    val serve : Address.t ->
                 (Address.t -> (T.write_cmd -> unit) -> T.read_result -> unit) ->
                 (unit -> unit)
 end
@@ -330,26 +329,26 @@ struct
     module T = T
     module BIO = BufferedIO (T) (Pdu) (E)
 
-    let listen service =
+    let listen my_addr =
         let open Unix in
-        E.L.info "Listening to service %s" service ;
-        getaddrinfo "" service [
+        E.L.info "Listening to address %a" Address.print my_addr ;
+        getaddrinfo my_addr.Address.name (string_of_int my_addr.Address.port) [
             AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
         List.filter_map (fun ai ->
-            try E.L.debug "Trying to listen on %a" print_addrinfo ai ;
-                let sock = socket ai.ai_family ai.ai_socktype 0 in
+            try let sock = socket ai.ai_family ai.ai_socktype 0 in
                 setsockopt sock SO_REUSEADDR true ;
                 setsockopt sock SO_KEEPALIVE true ;
                 bind sock ai.ai_addr ;
                 listen sock 5 ;
                 E.L.info "Listening on %a" print_addrinfo ai ;
                 Some sock
-            with _ ->
+            with exn ->
+                E.L.debug "Cannot listen on %a: %s" print_addrinfo ai (Printexc.to_string exn) ;
                 None)
 
-    let serve service value_cb =
+    let serve my_addr value_cb =
         let buf_writers = ref [] in (* all writer function to client cnxs *)
-        let listen_fds = listen service in
+        let listen_fds = listen my_addr in
         let rec shutdown () =
             E.L.debug "Shutdown: Closing listening socket(s)" ;
             List.iter Unix.close listen_fds ;
@@ -382,25 +381,25 @@ module UdpClient (T : IOType)
 struct
     module T = T
 
-    let connect host service =
+    let connect server =
+      let open Unix in
       match
-        Unix.getaddrinfo host service [
+        getaddrinfo server.Address.name (string_of_int server.Address.port) [
           AI_SOCKTYPE SOCK_DGRAM ; AI_CANONNAME ] |>
         List.find_map (fun ai ->
-          E.L.debug "Connecting to %a" print_addrinfo ai ;
-          try let sock = Unix.socket ai.ai_family ai.ai_socktype ai.ai_protocol in
-              Unix.connect sock ai.ai_addr ;
+          try let sock = socket ai.ai_family ai.ai_socktype ai.ai_protocol in
+              connect sock ai.ai_addr ;
               E.L.debug "Will send datagrams to %a" print_addrinfo ai ;
               Some sock
           with exn ->
               E.L.debug "Cannot connect: %s" (Printexc.to_string exn) ;
               None) with
       | exception Not_found ->
-        failwith ("Cannot resolve "^ host ^":"^ service)
+        failwith ("Cannot resolve "^ server.Address.name ^":"^ string_of_int server.Address.port)
       | sock -> sock
 
-    let client host service value_cb =
-        let sock = connect host service in
+    let client server value_cb =
+        let sock = connect server in
         let closed = ref false in
         let rec dgram_writer = function
           | T.Close ->
@@ -450,26 +449,26 @@ module UdpServer (T : IOType)
 struct
     module T = T
 
-    let bind service =
+    let bind my_addr =
         let open Unix in
-        E.L.info "Binding service %s" service ;
-        getaddrinfo "" service [
+        E.L.info "Binding address %a" Address.print my_addr ;
+        getaddrinfo my_addr.Address.name (string_of_int my_addr.Address.port) [
             AI_SOCKTYPE SOCK_DGRAM ; AI_PASSIVE ; AI_CANONNAME ] |>
         List.filter_map (fun ai ->
-            try E.L.debug "Trying to bind to %a" print_addrinfo ai ;
-                let sock = socket ai.ai_family ai.ai_socktype 0 in
+            try let sock = socket ai.ai_family ai.ai_socktype 0 in
                 setsockopt sock SO_REUSEADDR true ;
                 setsockopt sock SO_KEEPALIVE true ;
                 bind sock ai.ai_addr ;
                 E.L.info "Bound to %a" print_addrinfo ai ;
                 Some sock
-            with _ ->
+            with exn ->
+                E.L.debug "Cannot bind to %a: %s" print_addrinfo ai (Printexc.to_string exn) ;
                 None)
 
     let serve =
         let recv_buffer = String.make max_pdu_size 'X' in
-        fun service value_cb ->
-          let socks = bind service in
+        fun my_addr value_cb ->
+          let socks = bind my_addr in
           let rec stop_listening () =
               E.L.debug "Closing server socket(s)" ;
               List.iter Unix.close socks ;

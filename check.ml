@@ -21,7 +21,7 @@ struct
     module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
     module Srv = Event.UdpServer (SrvT) (Srv_Pdu) (E)
     let checks () =
-        let service_port = "31142" in
+        let service = Address.make "localhost" 31142 in
         let stop_listening = ref ignore in
         let server _addr respond = function
             | SrvT.EndOfFile ->
@@ -30,10 +30,10 @@ struct
                 L.debug "Echoing string '%s'" s ;
                 respond (SrvT.Write s) ;
                 !stop_listening () in
-        stop_listening := Srv.serve service_port server ;
+        stop_listening := Srv.serve service server ;
 
         let test_str = "glop glop" in
-        let send = Clt.client "localhost" service_port (fun w res ->
+        let send = Clt.client service (fun w res ->
             match res with
             | CltT.EndOfFile ->
                 OUnit2.assert_failure "Client received EOF"
@@ -63,7 +63,7 @@ struct
     let checks () =
         let idx = ref 0 in
         let tests = [| "hello" ; "glop" ; "" |] in
-        let service_port = "31142" in
+        let service = Address.make "localhost" 31142 in
         let stop_listening = ref ignore in
         let server _addr w = function
             | SrvT.EndOfFile ->
@@ -72,8 +72,8 @@ struct
             | SrvT.Value s ->
                 L.debug "Serving string.length for str='%s'" s ;
                 SrvT.Write (String.length s) |> w in
-        stop_listening := Srv.serve service_port server ;
-        let send = Clt.client "localhost" service_port (fun _w res ->
+        stop_listening := Srv.serve service server ;
+        let send = Clt.client service (fun _w res ->
             match res with
             | CltT.EndOfFile -> () (* we already closed at the beginning *)
             | CltT.Value l ->

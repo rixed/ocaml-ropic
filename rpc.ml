@@ -30,7 +30,7 @@ struct
     module Server = SrvMaker (Srv_IOType) (Srv_Pdu) (E)
 
     let serve h f =
-        Server.serve (string_of_int h.Address.port) (fun addr write input ->
+        Server.serve h (fun addr write input ->
             match input with
             | Srv_IOType.Value (id, v) ->
                 f addr (fun res -> write (Srv_IOType.Write (id, res))) v
@@ -76,7 +76,7 @@ struct
             | None ->
                 (* connect to the server *)
                 E.L.debug "Need a new connection to %s" (Address.to_string h) ;
-                let w = Client.client h.Address.name (string_of_int h.Address.port) (fun write input ->
+                let w = Client.client h (fun write input ->
                     match input with
                     | Clt_IOType.Value (id, v) ->
                         if id = 0 then (

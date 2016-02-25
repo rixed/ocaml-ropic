@@ -144,13 +144,13 @@ struct
         (* We call 'out' the direction from client to server
          * and 'in' the direction from server to client, ie. we adopt
          * the client perspective. *)
-        { listen_to : string ;
+        { listen_to : Address.t ;
           forward_to : Address.t ;
           mutable config : Config.t * Config.t (* in, out *) ;
           mutable clients : Clt.t list }
 
     let print fmt t =
-        Format.fprintf fmt "%s:%s:%d" t.listen_to t.forward_to.Address.name t.forward_to.Address.port
+        Format.fprintf fmt "%s:%d:%s:%d" t.listen_to.name t.listen_to.port t.forward_to.name t.forward_to.port
 
     type which = { f : 'a. 'a * 'a -> 'a }
     let w_fst = { f = fst }
@@ -186,8 +186,8 @@ struct
         delay_send "out" client w_snd ;
         client
 
-    let make listen_to host_name host_port conf =
-        { listen_to ;
+    let make listen_to_name listen_to_port host_name host_port conf =
+        { listen_to = Address.make listen_to_name (int_of_string listen_to_port) ;
           forward_to = Address.make host_name (int_of_string host_port) ;
           config = conf, conf ;
           clients = [] }
@@ -200,10 +200,10 @@ struct
             try String.split str "," with Not_found -> str, "" in
         let conf = Config.of_string s in
         match String.nsplit h ":" with
-        | [ listen_to ; host_name ; host_port ] ->
-            make listen_to host_name host_port conf
-        | [ listen_to ; host_port] ->
-            make listen_to "localhost" host_port conf
+        | [ listen_to_name ; listen_to_port ; host_name ; host_port ] ->
+            make listen_to_name listen_to_port host_name host_port conf
+        | [ listen_to_port ; host_port] ->
+            make "localhost" listen_to_port "localhost" host_port conf
         | _ ->
             invalid_arg str
 
@@ -223,7 +223,7 @@ struct
                 (fst clt.Clt.queues).Clt.writer <- Some to_client ;
                 (* Now start a new connection to the server for this client *)
                 let to_server =
-                    TcpClient.client t.forward_to.name (string_of_int t.forward_to.port) (server_to_client clt) in
+                    TcpClient.client t.forward_to (server_to_client clt) in
                 (snd clt.queues).Clt.writer <- Some to_server) ;
             match v with
             | IOType.Value str ->
@@ -242,7 +242,7 @@ let () =
     let link_converter = link_parser, Link.print in
     let links =
         let doc =
-            "port forward description, a la SSH: local_port:remote_host:remote_port "^
+            "port forward description, a la SSH: local_host:local_port:remote_host:remote_port "^
             "followed by optional settings (lag, loss, fuzz)" in
         Arg.(non_empty (pos_all link_converter [] (info ~doc ~docv:"LINK" []))) in
     let start_all links =
