@@ -23,7 +23,7 @@ struct
     module BaseIOType =
     struct
         type t_read = id * Types.arg
-        type t_write = id * Types.ret
+        type t_write = id * Types.ret res
     end
     module Srv_IOType = MakeIOType (BaseIOType)
     module Srv_Pdu = Pdu.Marshaller (Srv_IOType) (E.L)
@@ -90,7 +90,7 @@ struct
                             E.L.error "No continuation for message id %d (already timeouted?)" id
                         | Some k ->
                             E.L.debug "Continuing message id %d" id ;
-                            k (Ok v) ;
+                            k v ;
                             Hashtbl.remove continuations id)
                     | Clt_IOType.EndOfFile ->
                         (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)

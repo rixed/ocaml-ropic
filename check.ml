@@ -99,7 +99,7 @@ struct
     let shutdown = ref ignore
 
     let () =
-        let f _addr w (a, b) = String.of_int (a+b) |> w in
+        let f _addr w (a, b) = Ok (String.of_int (a+b)) |> w in
         shutdown := RPC.serve host f
 
     let checks () =

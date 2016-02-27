@@ -42,7 +42,7 @@ struct
          * the query is coming from, the continuation, and the argument in last
          * position for easier pattern matching.
          * Returns a shutdown function. *)
-        val serve : Address.t -> (Address.t -> (Types.ret -> unit) -> Types.arg -> unit) -> (unit -> unit)
+        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
     end
 
     module type Maker = functor (Types : TYPES) -> (S with module Types = Types)
