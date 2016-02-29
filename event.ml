@@ -62,7 +62,6 @@ struct
       and process_all_monitored_files files =
           List.iter (fun handler -> handler.process_files handler files) !handlers in
 
-      try_conditions () ;
       let open Unix in
       let rfiles, wfiles, efiles = collect_all_monitored_files () in
       let timeout =
@@ -73,7 +72,7 @@ struct
       (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
       let ll = List.length in
       L.debug "Selecting %d+%d+%d files..." (ll rfiles) (ll wfiles) (ll efiles) ;
-      try let changed_files = select rfiles wfiles efiles timeout in
+      (try let changed_files = select rfiles wfiles efiles timeout in
           (* alerts go first (take care that alert can add alerts and so on) *)
           let latest_alert = Unix.gettimeofday () +. 0.001 in
           let rec next_alert () =
@@ -88,7 +87,8 @@ struct
           let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
           L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
           process_all_monitored_files changed_files
-      with Unix_error (EINTR,_,_) -> ()
+      with Unix_error (EINTR,_,_) -> ()) ;
+      try_conditions ()
 
   let loop ?(timeout=1.) ?(until=fun () -> false) () =
       L.info "Entering event loop" ;
@@ -332,7 +332,6 @@ struct
 
     let listen my_addr =
         let open Unix in
-        E.L.info "Listening to address %a" Address.print my_addr ;
         getaddrinfo my_addr.Address.name (string_of_int my_addr.Address.port) [
             AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
         List.filter_map (fun ai ->
