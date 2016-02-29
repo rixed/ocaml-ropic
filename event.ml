@@ -46,10 +46,10 @@ struct
 
   let try_conditions () =
       conditions := List.fold_left (fun lst (c, f as cond) ->
-          if c () then (
-              f () ;
-              lst
-          ) else cond::lst) [] !conditions
+          try if c () then (f () ; lst) else cond::lst
+          with exn ->
+            L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
+            lst) [] !conditions
 
   (* This can be changed (using register) at any point, esp. during file
    * descriptors gathering or processing. So we want to read the original
@@ -62,7 +62,11 @@ struct
               handler.register_files files)
               ([],[],[]) !handlers
       and process_all_monitored_files files =
-          List.iter (fun handler -> handler.process_files handler files) !handlers in
+          List.iter (fun handler ->
+              try handler.process_files handler files
+              with exn ->
+                L.error "some file handler raised %s, ignoring" (Printexc.to_string exn)
+            ) !handlers in
 
       let open Unix in
       let rfiles, wfiles, efiles = collect_all_monitored_files () in
@@ -82,10 +86,13 @@ struct
                   let t, f = AlertHeap.find_min !alerts in
                   if t < latest_alert then (
                       alerts := AlertHeap.del_min !alerts ; (* take care not to call anything between find_min and del_min! *)
-                      f () ;
+                      (try f ()
+                       with exn ->
+                         L.error "some alert handler raised %s, ignoring" (Printexc.to_string exn)) ;
                       next_alert ())) in
           next_alert () ;
-          (* then file handlers *)
+          (* then file handlers - notice that alerts handlers may have closed some of the fd but
+           * that's ok because actually file processors could also close other fds. *)
           let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
           L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
           process_all_monitored_files changed_files
@@ -297,10 +304,10 @@ struct
                 None)
 
     let client server buf_reader =
-        try let fd = connect server in
-            BIO.start fd fd buf_reader
-        with Not_found ->
-            failwith ("Cannot connect to "^ server.Address.name ^":"^ string_of_int server.Address.port)
+        match connect server with
+        | exception Not_found -> (* When all addresses failed *)
+          failwith ("Cannot connect to "^ server.Address.name ^":"^ string_of_int server.Address.port)
+        | fd -> BIO.start fd fd buf_reader
 end
 
 module type SERVER =
@@ -324,6 +331,8 @@ let list_union l1 l2 =
   List.fold_left (fun prev e1 ->
       if List.mem e1 l2 then e1::prev else prev
     ) [] l1
+
+exception BadAddress
 
 module TcpServer (T : IOType)
                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
@@ -351,6 +360,10 @@ struct
     let serve my_addr value_cb =
         let buf_writers = ref [] in (* all writer function to client cnxs *)
         let listen_fds = listen my_addr in
+        if listen_fds = [] then (
+          E.L.error "Cannot bind address %a" Address.print my_addr ;
+          raise BadAddress
+        ) else
         let rec shutdown () =
             E.L.debug "Shutdown: Closing listening socket(s)" ;
             List.iter Unix.close listen_fds ;
@@ -372,7 +385,7 @@ struct
             )
         and handler = { register_files ; process_files } in
         E.register handler ;
-       shutdown 
+        shutdown
 end
 
 let max_pdu_size = 60000
@@ -471,6 +484,10 @@ struct
         let recv_buffer = String.make max_pdu_size 'X' in
         fun my_addr value_cb ->
           let socks = bind my_addr in
+          if socks = [] then (
+            E.L.error "Cannot bind address %a" Address.print my_addr ;
+            raise BadAddress
+          ) else
           let rec stop_listening () =
               E.L.debug "Closing server socket(s)" ;
               List.iter Unix.close socks ;
