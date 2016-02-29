@@ -20,6 +20,8 @@ struct
 end)
 let alerts = ref AlertHeap.empty
 
+exception Retry of string
+
 module type S =
 sig
   module L : Log.S
@@ -125,16 +127,16 @@ struct
       conditions := []
 
   (* Wrap f so that it would retry a few times on errors *)
-  let retry_on_error ?(max_tries=5) ?(delay=1.) ?(geom_backoff=3.)
+  let retry_on_error ?(max_tries=5) ?(delay=0.31) ?(geom_backoff=3.)
                      may_fail cont =
     let rec retry nb_tries delay =
-      may_fail (function
-      | Err err when nb_tries < max_tries ->
-        let delay = delay *. geom_backoff in
+      let fail err =
         L.info "Failed with %s, will retry in %.2f seconds" err delay ;
         pause delay (fun () ->
-          retry (nb_tries + 1) delay)
-      | _ as x -> cont x) in
+          retry (nb_tries + 1) (delay *. geom_backoff)) in
+      may_fail (function
+      | Err err when nb_tries < max_tries -> fail err
+      | _ as x -> try cont x with Retry err -> fail err) in
     retry 1 delay
 end
 
