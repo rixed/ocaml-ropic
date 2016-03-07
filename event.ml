@@ -15,8 +15,7 @@ type alert = float * (unit -> unit)
 module AlertHeap = Heap.Make (
 struct
     type t = alert
-    let compare (a,af) (b,bf) =
-        match compare a b with 0 -> compare af bf | n -> n
+    let compare (a, _af) (b, _bf) = compare a b
 end)
 let alerts = ref AlertHeap.empty
 
