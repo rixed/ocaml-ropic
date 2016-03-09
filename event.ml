@@ -35,6 +35,8 @@ sig
                        ?geom_backoff:float ->
                        (('a Ropic.res -> unit) -> unit) ->
                        ('a Ropic.res -> unit) -> unit
+  val forever : ?every:float -> ?variability:float ->
+                ('a -> unit) -> 'a -> unit
 end
 
 module Make (L : Log.S) : S with module L = L =
@@ -144,6 +146,12 @@ struct
       | Err err when nb_tries < max_tries -> fail err
       | _ as x -> try cont x with Retry err -> fail err) in
     retry 1 delay
+
+  let rec forever ?(every=1.) ?(variability=0.5) f x =
+    f x ;
+    let delay = every +. variability *. (Random.float 1. -. 0.5) in
+    pause delay (fun () -> forever ~every ~variability f x)
+
 end
 
 (* Buffered reader/writer of marshaled values of type IOType.t_read/IOType.t_write. *)
