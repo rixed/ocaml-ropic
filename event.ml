@@ -46,11 +46,15 @@ struct
   let conditions = ref ([] : condition list) (* test them each time anything happens *)
 
   let try_conditions () =
-      conditions := List.fold_left (fun lst (c, f as cond) ->
+      (* Warning: Callbacks are allowed to queue new conditions *)
+      let conds = !conditions in
+      conditions := [] ;
+      let rem_conds = List.fold_left (fun lst (c, f as cond) ->
           try if c () then (f () ; lst) else cond::lst
           with exn ->
             L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
-            lst) [] !conditions
+            lst) [] conds in
+      conditions := List.rev_append !conditions rem_conds
 
   (* This can be changed (using register) at any point, esp. during file
    * descriptors gathering or processing. So we want to read the original
