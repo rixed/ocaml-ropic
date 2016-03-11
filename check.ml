@@ -85,14 +85,14 @@ end
 
 (* Check RPCs *)
 
-module RPC_Checks (RPC_Maker : RPC.Maker) =
+module RPC_Checks (RPC_Maker : RPC_MAKER) =
 struct
     module RPC_Types =
     struct
         type arg = int * int
         type ret = string
     end
-    module RPC = RPC_Maker (RPC_Types)
+    module RPC = RPC_Maker (RPC_Types) (Pdu.Marshaller)
 
     let host = Address.make "localhost" 21743
 

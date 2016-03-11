@@ -19,35 +19,6 @@ end
 type 'a res = Ok of 'a
             | Err of string
 
-module RPC =
-struct
-    module type TYPES =
-    sig
-        type arg
-        type ret
-    end
-
-    module type S =
-    sig
-        module Types : TYPES
-
-        (* We favor event driven programming here *)
-        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
-        (* TODO: a call_multiple that allows several answers to be received. Useful to
-         * implement pubsub *)
-
-        (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
-        (* First argument is the address we want to serve from,
-         * Second is the query service function, which takes the remote address
-         * the query is coming from, the continuation, and the argument in last
-         * position for easier pattern matching.
-         * Returns a shutdown function. *)
-        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
-    end
-
-    module type Maker = functor (Types : TYPES) -> (S with module Types = Types)
-end
-
 module type BaseIOType =
 sig
     type t_read
@@ -78,6 +49,33 @@ struct
     include MakeIOType (BaseIOTypeRev)
 end
 
+module RPC =
+struct
+    module type TYPES =
+    sig
+        type arg
+        type ret
+    end
+
+    module type S =
+    sig
+        module Types : TYPES
+
+        (* We favor event driven programming here *)
+        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
+        (* TODO: a call_multiple that allows several answers to be received. Useful to
+         * implement pubsub *)
+
+        (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
+        (* First argument is the address we want to serve from,
+         * Second is the query service function, which takes the remote address
+         * the query is coming from, the continuation, and the argument in last
+         * position for easier pattern matching.
+         * Returns a shutdown function. *)
+        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
+    end
+end
+
 module type PDU =
 sig
     module BaseIOType : BaseIOType (* the types of value transported in this PDU *)
@@ -90,3 +88,12 @@ sig
     (* once we know a value is available, read it *)
     val of_string : string -> int -> int -> BaseIOType.t_read option
 end
+
+module type PDU_MAKER =
+    functor (T : BaseIOType) (S : Log.S) ->
+            PDU with module BaseIOType = T
+
+module type RPC_MAKER =
+    functor (Types : RPC.TYPES) (PduMaker : PDU_MAKER) ->
+            (RPC.S with module Types = Types)
+

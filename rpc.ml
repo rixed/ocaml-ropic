@@ -10,6 +10,7 @@ let next_id =
 
 module Maker (E : Event.S)
              (Types : RPC.TYPES)
+             (PduMaker : PDU_MAKER)
              (SrvMaker : Event.SERVER_MAKER)
              (CltMaker : Event.CLIENT_MAKER) :
     RPC.S with module Types = Types =
@@ -24,7 +25,7 @@ struct
         type t_write = id * Types.ret res
     end
     module Srv_IOType = MakeIOType (BaseIOType)
-    module Srv_Pdu = Pdu.Marshaller (Srv_IOType) (E.L)
+    module Srv_Pdu = PduMaker (Srv_IOType) (E.L)
     module Server = SrvMaker (Srv_IOType) (Srv_Pdu) (E)
 
     let serve h f =
@@ -37,7 +38,7 @@ struct
 
     (* Reverse the types and build the client: *)
     module Clt_IOType = MakeIOTypeRev (BaseIOType)
-    module Clt_Pdu = Pdu.Marshaller (Clt_IOType) (E.L)
+    module Clt_Pdu = PduMaker (Clt_IOType) (E.L)
     module Client = CltMaker (Clt_IOType) (Clt_Pdu) (E)
 
     (* Notice that:
@@ -108,14 +109,16 @@ struct
 end
 
 module Tcp (E : Event.S)
-           (Types : RPC.TYPES) :
+           (Types : RPC.TYPES)
+           (PduMaker : PDU_MAKER) :
     RPC.S with module Types = Types =
-    Maker (E) (Types) (Event.TcpServer) (Event.TcpClient)
+    Maker (E) (Types) (PduMaker) (Event.TcpServer) (Event.TcpClient)
 
 (* Compared to TCP, our "cnxs" are merely writer functions that saves us from
  * name resolution, but of course there are no round-trip connection process
  * involved: *)
 module Udp (E : Event.S)
-           (Types : RPC.TYPES) :
+           (Types : RPC.TYPES)
+           (PduMaker : PDU_MAKER) :
     RPC.S with module Types = Types =
-    Maker (E) (Types) (Event.UdpServer) (Event.UdpClient)
+    Maker (E) (Types) (PduMaker) (Event.UdpServer) (Event.UdpClient)
