@@ -1,8 +1,6 @@
 open Batteries
 open Ropic
 
-module L = Log.Info
-
 (* RPC through TCP *)
 
 (* for clarity, have a single id for any kind of RPC *)

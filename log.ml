@@ -44,35 +44,37 @@ module ToLogfile (Conf : sig val name : string end) : BASE = ToFile (struct
   let oc = File.open_out ~mode:[`create;`append;`text] Conf.name
 end)
 
-module Debug (Base : BASE) : S =
+module Make (Base : BASE) =
 struct
-  let error = Base.print
-  let warn =  Base.print
-  let info =  Base.print
-  let debug = Base.print
-end
+  module Debug : S =
+  struct
+    let error = Base.print
+    let warn =  Base.print
+    let info =  Base.print
+    let debug = Base.print
+  end
 
-module Info (Base : BASE) : S =
-struct
-  let error = Base.print
-  let warn =  Base.print
-  let info =  Base.print
-  let debug = dont_print
-end
+  module Info : S =
+  struct
+    let error = Base.print
+    let warn =  Base.print
+    let info =  Base.print
+    let debug = dont_print
+  end
 
-module Warn (Base : BASE) : S =
-struct
-  let error = Base.print
-  let warn =  Base.print
-  let info =  dont_print
-  let debug = dont_print
-end
+  module Warn : S =
+  struct
+    let error = Base.print
+    let warn =  Base.print
+    let info =  dont_print
+    let debug = dont_print
+  end
 
-module Error (Base : BASE) : S =
-struct
-  let error = Base.print
-  let warn =  dont_print
-  let info =  dont_print
-  let debug = dont_print
+  module Error : S =
+  struct
+    let error = Base.print
+    let warn =  dont_print
+    let info =  dont_print
+    let debug = dont_print
+  end
 end
-

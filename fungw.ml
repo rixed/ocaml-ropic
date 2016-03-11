@@ -1,8 +1,8 @@
 open Batteries
 open Ropic
 
-module L = Log.Debug (Log.ToStdout)
-module E = Event.Make (L)
+module L = Log.Make (Log.ToStdout)
+module E = Event.Make (L.Debug)
 
 (* This program merely:
  * listen to some port and connect to a given destination, then
@@ -162,20 +162,20 @@ struct
         | Some writer ->
             if not (Queue.is_empty queue.q) then (
                 let x = Queue.take queue.q in
-                L.debug "%s: Writing %s..." name (match x with IOType.Close -> "FIN" | IOType.Write _ -> "a string") ;
+                E.L.debug "%s: Writing %s..." name (match x with IOType.Close -> "FIN" | IOType.Write _ -> "a string") ;
                 writer x ;
                 if x = IOType.Close then clt.closed <- true
             )) ;
         if not clt.closed then (
             let open Condition in
             let d = Random.float cond.lag.chance in
-            L.debug "%s: rescheduling in %gs" name d ;
+            E.L.debug "%s: rescheduling in %gs" name d ;
             E.pause d (fun () -> delay_send name clt which)
         )
 
     let make_client t address =
         let open Clt in
-        L.debug "New client: %s" (Address.to_string address) ;
+        E.L.debug "New client: %s" (Address.to_string address) ;
         let client =
             { address = address ;
               queues = make_queue (), make_queue () ;

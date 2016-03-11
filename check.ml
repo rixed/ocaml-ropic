@@ -1,8 +1,8 @@
 (* Tests *)
 open Batteries
 open Ropic
-module L = Log.Debug (Log.ToStdout)
-module E = Event.Make (L)
+module L = Log.Make (Log.ToStdout)
+module E = Event.Make (L.Debug)
 
 (* Check UdpClient *)
 
@@ -15,10 +15,10 @@ struct
         type t_read = string
     end
     module CltT = MakeIOType (BaseIOType)
-    module Clt_Pdu = Pdu.Marshaller(CltT) (L)
+    module Clt_Pdu = Pdu.Marshaller(CltT) (L.Debug)
     module Clt = Event.UdpClient (CltT) (Clt_Pdu) (E)
     module SrvT = MakeIOTypeRev (BaseIOType)
-    module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
+    module Srv_Pdu = Pdu.Marshaller(SrvT) (L.Debug)
     module Srv = Event.UdpServer (SrvT) (Srv_Pdu) (E)
     let checks () =
         let service = Address.make "localhost" 31142 in
@@ -27,7 +27,7 @@ struct
             | SrvT.EndOfFile ->
                 OUnit2.assert_failure "Server received EOF"
             | SrvT.Value s ->
-                L.debug "Echoing string '%s'" s ;
+                E.L.debug "Echoing string '%s'" s ;
                 respond (SrvT.Write s) ;
                 !stop_listening () in
         stop_listening := Srv.serve service server ;
@@ -39,7 +39,7 @@ struct
                 OUnit2.assert_failure "Client received EOF"
             | CltT.Value l ->
                 OUnit2.assert_equal ~msg:"String equals" l test_str ;
-                L.debug "Received echo of '%s' = '%s'" test_str l ;
+                E.L.debug "Received echo of '%s' = '%s'" test_str l ;
                 w CltT.Close) in
         send (CltT.Write test_str) ;
 end
@@ -55,10 +55,10 @@ struct
         type t_read = int
     end
     module CltT = MakeIOType (BaseIOType)
-    module Clt_Pdu = Pdu.Marshaller(CltT) (L)
+    module Clt_Pdu = Pdu.Marshaller(CltT) (L.Debug)
     module Clt = Event.TcpClient (CltT) (Clt_Pdu) (E)
     module SrvT = MakeIOTypeRev (BaseIOType)
-    module Srv_Pdu = Pdu.Marshaller(SrvT) (L)
+    module Srv_Pdu = Pdu.Marshaller(SrvT) (L.Debug)
     module Srv = Event.TcpServer (SrvT) (Srv_Pdu) (E)
     let checks () =
         let idx = ref 0 in
@@ -70,7 +70,7 @@ struct
                 w SrvT.Close ;
                 !stop_listening ()
             | SrvT.Value s ->
-                L.debug "Serving string.length for str='%s'" s ;
+                E.L.debug "Serving string.length for str='%s'" s ;
                 SrvT.Write (String.length s) |> w in
         stop_listening := Srv.serve service server ;
         let send = Clt.client service (fun _w res ->
@@ -104,14 +104,14 @@ struct
 
     let checks () =
         RPC.call host (0, 1) (fun r ->
-            L.debug "Test RPC(0,1)" ;
+            E.L.debug "Test RPC(0,1)" ;
             OUnit2.assert_equal ~msg:"RPC answer is OK, 1" r (Ok "1")) ;
         RPC.call host (2, 3) (fun r ->
-            L.debug "Test RPC(2,3)" ;
+            E.L.debug "Test RPC(2,3)" ;
             OUnit2.assert_equal ~msg:"RPC answer is OK, 5" r (Ok "5") ;
             (* And we can call an RPC from an answer *)
             RPC.call host (4, 5) (fun r ->
-                L.debug "Test RPC(4,5)" ;
+                E.L.debug "Test RPC(4,5)" ;
                 OUnit2.assert_equal ~msg:"RPC answer is OK, 9" r (Ok "9") ;
             !shutdown ()))
 end
