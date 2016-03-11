@@ -32,7 +32,7 @@ sig
   val condition : (unit -> bool) -> (unit -> unit) -> unit
   val clear : unit -> unit
   val retry_on_error : ?max_tries:int -> ?delay:float ->
-                       ?geom_backoff:float ->
+                       ?max_delay:float -> ?geom_backoff:float ->
                        (('a Ropic.res -> unit) -> unit) ->
                        ('a Ropic.res -> unit) -> unit
   val forever : ?every:float -> ?variability:float ->
@@ -139,13 +139,13 @@ struct
       conditions := []
 
   (* Wrap f so that it would retry a few times on errors *)
-  let retry_on_error ?(max_tries=5) ?(delay=0.31) ?(geom_backoff=3.)
+  let retry_on_error ?(max_tries=5) ?(delay=0.31) ?(max_delay=30.) ?(geom_backoff=3.)
                      may_fail cont =
     let rec retry nb_tries delay =
       let fail err =
         L.info "Failed with %s, will retry in %.2f seconds" err delay ;
         pause delay (fun () ->
-          retry (nb_tries + 1) (delay *. geom_backoff)) in
+          retry (nb_tries + 1) (min max_delay (delay *. geom_backoff))) in
       may_fail (function
       | Err err when nb_tries < max_tries -> fail err
       | _ as x -> try cont x with Retry err -> fail err) in
