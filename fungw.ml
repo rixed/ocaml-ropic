@@ -122,12 +122,23 @@ end
 
 module Link =
 struct
-    module IOType = MakeIOType (Pdu.AllStrings)
+    module SrvTypes =
+    struct
+        type to_write = string
+        type to_read = string
+        include Pdu.Marshaller
+    end
+    module CltTypes =
+    struct
+        type to_write = string
+        type to_read = string
+        include Pdu.Marshaller
+    end
     module Clt =
     struct
         type queue =
-            { q : IOType.write_cmd Queue.t ;
-              mutable writer : (IOType.write_cmd -> unit) option }
+            { q : string write_cmd Queue.t ;
+              mutable writer : (string write_cmd -> unit) option }
         let make_queue () =
             { q = Queue.create () ;
               writer = None }
@@ -137,8 +148,8 @@ struct
               mutable condition : Condition.t * Condition.t ;
               mutable closed : bool }
     end
-    module TcpServer = Event.TcpServer (IOType) (Pdu.Blobber) (E)
-    module TcpClient = Event.TcpClient (IOType) (Pdu.Blobber) (E)
+    module TcpServer = Event.TcpServer (SrvTypes) (E)
+    module TcpClient = Event.TcpClient (CltTypes) (E)
 
     type t =
         (* We call 'out' the direction from client to server
@@ -156,15 +167,16 @@ struct
     let w_fst = { f = fst }
     let w_snd = { f = snd }
     let rec delay_send name clt which =
-        let queue = which.f clt.Clt.queues and cond = which.f clt.Clt.condition in
+        let queue = which.f clt.Clt.queues
+        and cond = which.f clt.Clt.condition in
         (match queue.Clt.writer with
         | None -> ()
         | Some writer ->
             if not (Queue.is_empty queue.q) then (
                 let x = Queue.take queue.q in
-                E.L.debug "%s: Writing %s..." name (match x with IOType.Close -> "FIN" | IOType.Write _ -> "a string") ;
+                E.L.debug "%s: Writing %s..." name (match x with Close -> "FIN" | Write _ -> "a string") ;
                 writer x ;
-                if x = IOType.Close then clt.closed <- true
+                if x = Close then clt.closed <- true
             )) ;
         if not clt.closed then (
             let open Condition in
@@ -209,14 +221,14 @@ struct
 
     let start t =
         let server_to_client clt _writer = function
-            | IOType.Value str ->
-                Queue.add (IOType.Write str) (fst clt.Clt.queues).q
-            | IOType.EndOfFile ->
-                Queue.add IOType.Close (fst clt.Clt.queues).q in
+            | Value str ->
+                Queue.add (Write str) (fst clt.Clt.queues).q
+            | EndOfFile ->
+                Queue.add Close (fst clt.Clt.queues).q in
         let client_to_server clt_addr to_client v =
             let clt = make_client t clt_addr in
-            (* We can't know the to_client writer before some client actually connect
-             * So we save it now. *)
+            (* We can't know the to_client writer before some client actually
+             * connect. So we save it now. *)
             (match (fst clt.Clt.queues).Clt.writer with
             | Some _ -> ()
             | None ->
@@ -226,10 +238,10 @@ struct
                     TcpClient.client t.forward_to (server_to_client clt) in
                 (snd clt.queues).Clt.writer <- Some to_server) ;
             match v with
-            | IOType.Value str ->
-                Queue.add (IOType.Write str) (snd clt.Clt.queues).q
-            | IOType.EndOfFile ->
-                Queue.add IOType.Close (snd clt.Clt.queues).q in
+            | Value str ->
+                Queue.add (Write str) (snd clt.Clt.queues).q
+            | EndOfFile ->
+                Queue.add Close (snd clt.Clt.queues).q in
         let shutdown = TcpServer.serve t.listen_to client_to_server in
         shutdown
 end

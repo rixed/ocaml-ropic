@@ -15,4 +15,5 @@ fungw
 *.cmi
 *.o
 *.cmo
+*.bak
 all_tests.ml

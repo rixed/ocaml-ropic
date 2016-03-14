@@ -3,10 +3,10 @@ top_srcdir = @top_srcdir@
 PKG_NAME = ropic
 SOURCES  = \
 	log.ml \
-	pdu.ml \
 	ropic.ml \
 	event.ml \
-	rpc.ml
+	rpc.ml \
+	pdu.ml
 
 EXAMPLES_BYTE = fungw.byte
 

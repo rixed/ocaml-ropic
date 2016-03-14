@@ -1,6 +1,41 @@
 (* All signatures for the whole library *)
 open Batteries
 
+let print_sockaddr oc addr =
+    let open Unix in
+    match addr with
+    | ADDR_UNIX file -> Printf.fprintf oc "UNIX:%s" file
+    | ADDR_INET (addr, port) ->
+      Printf.fprintf oc "%s:%d" (string_of_inet_addr addr) port
+
+let print_addrinfo oc ai =
+    let open Unix in
+    let string_of_family = function
+        | PF_UNIX  -> "Unix"
+        | PF_INET  -> "IPv4"
+        | PF_INET6 -> "IPv6" in
+    let string_of_socktype = function
+        | SOCK_STREAM -> "stream"
+        | SOCK_DGRAM  -> "datagram"
+        | SOCK_RAW    -> "raw"
+        | SOCK_SEQPACKET -> "seqpacket" in
+    let string_of_proto p =
+        try (getprotobynumber p).p_name
+        with Not_found -> string_of_int p in
+    Printf.fprintf oc "%s:%s:%s %a (%s)"
+        (string_of_family ai.ai_family)
+        (string_of_socktype ai.ai_socktype)
+        (string_of_proto ai.ai_protocol)
+        print_sockaddr ai.ai_addr
+        ai.ai_canonname
+
+(* Retriable errors will be retried *)
+type 'a res = Ok of 'a
+            | Err of string
+
+type 'a write_cmd = Write of 'a | Close
+type 'a read_result = Value of 'a | EndOfFile
+
 module Address =
 struct
     type t = { name : string ;
@@ -14,86 +49,4 @@ struct
         | Unix.ADDR_INET (ip, port) ->
             { name = Unix.string_of_inet_addr ip ; port }
 end
-
-(* Retriable errors will be retried *)
-type 'a res = Ok of 'a
-            | Err of string
-
-module type BaseIOType =
-sig
-    type t_read
-    type t_write
-end
-
-module type IOType =
-sig
-    include BaseIOType
-    type read_result = Value of t_read | EndOfFile
-    type write_cmd = Write of t_write | Close
-end
-
-module MakeIOType (B : BaseIOType) : IOType with type t_read = B.t_read and type t_write = B.t_write =
-struct
-    include B
-    type read_result = Value of t_read | EndOfFile
-    type write_cmd = Write of t_write | Close
-end
-
-module MakeIOTypeRev (B : BaseIOType) : IOType with type t_read = B.t_write and type t_write = B.t_read =
-struct
-    module BaseIOTypeRev =
-    struct
-        type t_read = B.t_write
-        type t_write = B.t_read
-    end
-    include MakeIOType (BaseIOTypeRev)
-end
-
-module RPC =
-struct
-    module type TYPES =
-    sig
-        type arg
-        type ret
-    end
-
-    module type S =
-    sig
-        module Types : TYPES
-
-        (* We favor event driven programming here *)
-        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
-        (* TODO: a call_multiple that allows several answers to be received. Useful to
-         * implement pubsub *)
-
-        (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
-        (* First argument is the address we want to serve from,
-         * Second is the query service function, which takes the remote address
-         * the query is coming from, the continuation, and the argument in last
-         * position for easier pattern matching.
-         * Returns a shutdown function. *)
-        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
-    end
-end
-
-module type PDU =
-sig
-    module BaseIOType : BaseIOType (* the types of value transported in this PDU *)
-
-    val to_string : BaseIOType.t_write -> string
-
-    (* tells if there are enough bytes for reading a value (total size returned) *)
-    val has_value : string -> int -> int -> int option
-
-    (* once we know a value is available, read it *)
-    val of_string : string -> int -> int -> BaseIOType.t_read option
-end
-
-module type PDU_MAKER =
-    functor (T : BaseIOType) (S : Log.S) ->
-            PDU with module BaseIOType = T
-
-module type RPC_MAKER =
-    functor (Types : RPC.TYPES) (PduMaker : PDU_MAKER) ->
-            (RPC.S with module Types = Types)
 

@@ -1,45 +1,85 @@
 open Batteries
 open Ropic
 
-(* RPC through TCP *)
+(* RPCs are mere communication channels with a way to associate each
+ * queries with an answer using a sequence identifier that we add to
+ * the type of the argument and return value, and a way to return errors.
+ * Therefore, the provided (un)serializer must take into account this
+ * additional this additional integer and error variant. *)
 
 (* for clarity, have a single id for any kind of RPC *)
 let next_id =
     let n = ref 0 in
     fun () -> incr n ; !n
 
-module Maker (E : Event.S)
-             (Types : RPC.TYPES)
-             (PduMaker : PDU_MAKER)
-             (SrvMaker : Event.SERVER_MAKER)
-             (CltMaker : Event.CLIENT_MAKER) :
-    RPC.S with module Types = Types =
+module type TYPES =
+sig
+    type arg
+    type ret
+end
+module type TYPES_CLT =
+sig
+    include TYPES
+    type to_write = int * arg
+    type to_read = int * ret res
+    val serialize : to_write -> string
+    val unserialize : string -> int -> int -> (int * to_read) option
+end
+module type TYPES_SRV =
+sig
+    include TYPES
+    type to_write = int * ret res
+    type to_read = int * arg
+    val serialize : to_write  -> string
+    val unserialize : string -> int -> int -> (int * to_read) option
+end
+
+module S =
+struct
+    module type CLT =
+    sig
+        module Types : TYPES_CLT
+        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
+        (* TODO: a call_multiple that allows several answers to be received. Useful to implement pubsub *)
+        (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
+    end
+
+    module type SRV =
+    sig
+        module Types : TYPES_SRV
+
+        (* First argument is the address we want to serve from,
+         * Second is the query service function, which takes the remote address
+         * the query is coming from, the continuation, and the argument in last
+         * position for easier pattern matching.
+         * Returns a shutdown function. *)
+        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
+    end
+end
+
+module Server (E : Event.S)
+              (Types : TYPES_SRV)
+              (SrvMaker : Event.SERVER_MAKER) :
+    S.SRV with module Types = Types =
 struct
     module Types = Types
-
-    type id = int
-
-    module BaseIOType =
-    struct
-        type t_read = id * Types.arg
-        type t_write = id * Types.ret res
-    end
-    module Srv_IOType = MakeIOType (BaseIOType)
-    module Srv_Pdu = PduMaker (Srv_IOType) (E.L)
-    module Server = SrvMaker (Srv_IOType) (Srv_Pdu) (E)
+    module Server = SrvMaker (Types) (E)
 
     let serve h f =
-        Server.serve h (fun addr write input ->
-            match input with
-            | Srv_IOType.Value (id, v) ->
-                f addr (fun res -> write (Srv_IOType.Write (id, res))) v
-            | Srv_IOType.EndOfFile ->
-                write Srv_IOType.Close)
+        Server.serve h (fun addr write -> function
+            | Value (id, v) ->
+                f addr (fun res -> write (Write (id, res))) v
+            | EndOfFile ->
+                write Close)
+end
 
-    (* Reverse the types and build the client: *)
-    module Clt_IOType = MakeIOTypeRev (BaseIOType)
-    module Clt_Pdu = PduMaker (Clt_IOType) (E.L)
-    module Client = CltMaker (Clt_IOType) (Clt_Pdu) (E)
+module Client (E : Event.S)
+              (Types : TYPES_CLT)
+              (CltMaker : Event.CLIENT_MAKER) :
+    S.CLT with module Types = Types =
+struct
+    module Types = Types
+    module Client = CltMaker (Types) (E)
 
     (* Notice that:
      * - the TCP cnx is initialized when first used and then saved for later,
@@ -77,7 +117,7 @@ struct
                 E.L.debug "Need a new connection to %s" (Address.to_string h) ;
                 let w = Client.client h (fun write input ->
                     match input with
-                    | Clt_IOType.Value (id, v) ->
+                    | Value (id, v) ->
                         if id = 0 then (
                           E.L.error "Received an answer for a query that was not expecting one"
                         ) else
@@ -91,7 +131,7 @@ struct
                             E.L.debug "Continuing message id %d" id ;
                             k v ;
                             Hashtbl.remove continuations id)
-                    | Clt_IOType.EndOfFile ->
+                    | EndOfFile ->
                         (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
                         E.L.info "Closing cnx to %s" (Address.to_string h) ;
                         write Close ;
@@ -108,17 +148,3 @@ struct
         writer (Write (id, v))
 end
 
-module Tcp (E : Event.S)
-           (Types : RPC.TYPES)
-           (PduMaker : PDU_MAKER) :
-    RPC.S with module Types = Types =
-    Maker (E) (Types) (PduMaker) (Event.TcpServer) (Event.TcpClient)
-
-(* Compared to TCP, our "cnxs" are merely writer functions that saves us from
- * name resolution, but of course there are no round-trip connection process
- * involved: *)
-module Udp (E : Event.S)
-           (Types : RPC.TYPES)
-           (PduMaker : PDU_MAKER) :
-    RPC.S with module Types = Types =
-    Maker (E) (Types) (PduMaker) (Event.UdpServer) (Event.UdpClient)

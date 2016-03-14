@@ -126,6 +126,6 @@ doc: $(SOURCES)
 	$(OCAMLDOC) $(SYNTAX) -d doc $^
 
 clear:
-	sed -i -e 's/[ 	]\+$$//' $(wildcard *.ml *.c *.scm)
+	sed -i '' -e 's/[ 	]\+$$//' $(wildcard *.ml *.mli)
 
 -include .depend

@@ -158,10 +158,19 @@ struct
 
 end
 
-(* Buffered reader/writer of marshaled values of type IOType.t_read/IOType.t_write. *)
-module BufferedIO (T : IOType)
-                  (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                  (E : S) =
+(* This provides a way to handle a set of file descriptors on read/write
+ * with a simple callback that will receives whatever is read plus a writer
+ * to send an answer to. *)
+
+module type IOType =
+sig
+    type to_write
+    type to_read
+    val serialize : to_write -> string
+    val unserialize : string -> int -> int -> (int * to_read) option
+end
+
+module BufferedIO (T : IOType) (E : S) =
 struct
     let try_write_buf buf fd =
         let str = Buffer.contents buf in
@@ -180,7 +189,7 @@ struct
         let sz = Unix.read fd str 0 (String.length str) in
         E.L.debug "Read %d bytes from file" sz ;
         if sz = 0 then (
-            value_cb writer T.EndOfFile ;
+            value_cb writer EndOfFile ;
             true
         ) else (
             Buffer.add_substring buf str 0 sz ;
@@ -189,13 +198,11 @@ struct
             let rec read_next content ofs =
                 let len = String.length content - ofs in
                 E.L.debug "Still %d bytes to read from buffer" len ;
-                (* Do we have enough bytes to read a value? *)
-                (match Pdu.has_value content ofs len with
+                (match T.unserialize content ofs len with
                 | None -> ofs
-                | Some value_len ->
+                | Some (value_len, value) ->
                     assert (value_len <= len) ;
-                    Pdu.of_string content ofs value_len |>
-                    Option.may (fun v -> value_cb writer (T.Value v)) ;
+                    value_cb writer (Value value) ;
                     read_next content (ofs + value_len)) in
             let content = Buffer.contents buf in
             Buffer.clear buf ;
@@ -211,10 +218,10 @@ struct
         let writer c =
             assert (!close_out <> Done) ; (* otherwise why were we been given the possibility to write? *)
             match c with
-            | T.Write v ->
-                Pdu.to_string v |>
+            | Write v ->
+                T.serialize v |>
                 Buffer.add_string outbuf
-            | T.Close ->
+            | Close ->
                 if !close_out = Nope then close_out := ToDo in
         let buffer_is_empty b = Buffer.length b = 0 in
         let register_files (rfiles, wfiles, efiles) =
@@ -248,59 +255,34 @@ struct
         writer
 end
 
-let print_sockaddr oc addr =
-    let open Unix in
-    match addr with
-    | ADDR_UNIX file -> Printf.fprintf oc "UNIX:%s" file
-    | ADDR_INET (addr, port) ->
-      Printf.fprintf oc "%s:%d" (string_of_inet_addr addr) port
-
-let print_addrinfo oc ai =
-    let open Unix in
-    let string_of_family = function
-        | PF_UNIX  -> "Unix"
-        | PF_INET  -> "IPv4"
-        | PF_INET6 -> "IPv6" in
-    let string_of_socktype = function
-        | SOCK_STREAM -> "stream"
-        | SOCK_DGRAM  -> "datagram"
-        | SOCK_RAW    -> "raw"
-        | SOCK_SEQPACKET -> "seqpacket" in
-    let string_of_proto p =
-        try (getprotobynumber p).p_name
-        with Not_found -> string_of_int p in
-    Printf.fprintf oc "%s:%s:%s %a (%s)"
-        (string_of_family ai.ai_family)
-        (string_of_socktype ai.ai_socktype)
-        (string_of_proto ai.ai_protocol)
-        print_sockaddr ai.ai_addr
-        ai.ai_canonname
+(* The CLIENT module implements the client side of a connected channel.
+ * It's using the above BufferedIO module once per connection (and also
+ * for listening file descriptors, in the case of TCP. *)
 
 module type CLIENT =
 sig
-    module T : IOType
+    module Types : IOType
 
-    (* [client "server.com" "http" reader] connect to server.com:80 and will send all read value to [reader]
-     * function. The returned value is the writer function.
-     * Notice that the reader is a callback, so this is different (and more complex) than the function call
-     * abstraction. The advantage is that the main thread can do a remote call and proceed to something else
-     * instead of being forced to wait for the response (event driven design). This also allows 0 or more than
-     * 1 return values. *)
-    val client : Address.t -> ((T.write_cmd -> unit) -> T.read_result -> unit) -> (T.write_cmd -> unit)
+    (* [client server_addr reader] connect to the given endpoint and send
+     * to [reader] all read values accompanied by a writer function. It
+     * also returns the (same) writer function. *)
+    val client : Address.t ->
+                 ((Types.to_write write_cmd -> unit) ->
+                  Types.to_read read_result ->
+                  unit) ->
+                 (Types.to_write write_cmd -> unit)
 end
 
 module type CLIENT_MAKER =
-  functor (T : IOType)
-          (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-          (E : S) ->
-          CLIENT with module T = T
+    functor (Types : IOType)
+            (E : S) ->
+            CLIENT with module Types = Types
 
 module TcpClient (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) : CLIENT with module T = T =
+                 (E : S) = (*: CLIENT with module Types = T =*)
 struct
-    module BIO = BufferedIO (T) (Pdu) (E)
-    module T = T
+    module Types = T
+    module BIO = BufferedIO (Types) (E)
 
     let connect server =
         let open Unix in
@@ -323,19 +305,22 @@ end
 
 module type SERVER =
 sig
-    module T : IOType
-    (* [serve service new_clt callback] listen on port [service] and serve each query with [callback].
-     * A shutdown function is returned that will stop the server from accepting new connections. *)
+    module Types : IOType
+    (* [serve service callback] listens on the given service address and
+     * start serving each query with [callback].
+     * A shutdown function is returned that will stop the server from
+     * accepting new connections when called. *)
     val serve : Address.t ->
-                (Address.t -> (T.write_cmd -> unit) -> T.read_result -> unit) ->
+                (Address.t ->
+                 (Types.to_write write_cmd -> unit) ->
+                 Types.to_read read_result -> unit) ->
                 (unit -> unit)
 end
 
 module type SERVER_MAKER =
-  functor (T : IOType)
-          (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-          (E : S) ->
-          SERVER with module T = T
+    functor (Types : IOType)
+            (E : S) ->
+            SERVER with module Types = Types
 
 (* TODO: use proper sets rather than lists for fds *)
 let list_union l1 l2 =
@@ -346,11 +331,10 @@ let list_union l1 l2 =
 exception BadAddress
 
 module TcpServer (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) : SERVER with module T = T =
+                 (E : S) : SERVER with module Types = T =
 struct
-    module T = T
-    module BIO = BufferedIO (T) (Pdu) (E)
+    module Types = T
+    module BIO = BufferedIO (Types) (E)
 
     let listen my_addr =
         let open Unix in
@@ -380,7 +364,7 @@ struct
             List.iter Unix.close listen_fds ;
             E.unregister handler ;
             E.L.debug "Shutdown: Close all cnxs to clients" ;
-            List.iter (fun w -> w T.Close) !buf_writers ;
+            List.iter (fun w -> w Close) !buf_writers ;
             buf_writers := []
         (* We need a special kind of event handler to handle the listener fd:
          * one that accept when it's readable and that never write. *)
@@ -402,10 +386,9 @@ end
 let max_pdu_size = 60000
 
 module UdpClient (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) : CLIENT with module T = T =
+                 (E : S) : CLIENT with module Types = T =
 struct
-    module T = T
+    module Types = T
 
     let connect server =
       let open Unix in
@@ -428,13 +411,13 @@ struct
         let sock = connect server in
         let closed = ref false in
         let rec dgram_writer = function
-          | T.Close ->
+          | Close ->
             assert (not !closed) ; (* punish double close *)
             closed := true ;
             E.unregister handler
-          | T.Write v ->
+          | Write v ->
             assert (not !closed) ;
-            let data = Pdu.to_string v in
+            let data = T.serialize v in
             let len = String.length data in
             E.L.debug "Send datagram of %d bytes" len ;
             let sz = Unix.send sock data 0 len [] in
@@ -455,13 +438,11 @@ struct
               if sz = 0 then (
                 E.L.warn "No (more) connection to server"
               ) else (
-                match Pdu.has_value recv_buffer 0 sz with
+                match T.unserialize recv_buffer 0 sz with
                 | None -> E.L.warn "Discarding datagram of %d bytes" sz
-                | Some sz' ->
+                | Some (sz', value) ->
                   if sz <> sz' then E.L.warn "Received garbage (%d bytes instead of %d)" sz' sz else
-                  (match Pdu.of_string recv_buffer 0 sz' with
-                  | None -> E.L.warn "Cannot read value from datagram of %d bytes" sz'
-                  | Some v -> value_cb dgram_writer (T.Value v))
+                  value_cb dgram_writer (Value value)
               )
             )
         and handler = { register_files ; process_files } in
@@ -470,10 +451,9 @@ struct
 end
 
 module UdpServer (T : IOType)
-                 (Pdu : PDU with type BaseIOType.t_read = T.t_read and type BaseIOType.t_write = T.t_write)
-                 (E : S) : SERVER with module T = T =
+                 (E : S) : SERVER with module Types = T =
 struct
-    module T = T
+    module Types = T
 
     let bind my_addr =
         let open Unix in
@@ -504,9 +484,9 @@ struct
               List.iter Unix.close socks ;
               E.unregister handler
           and dgram_writer sock dest_addr = function
-            | T.Close -> ()
-            | T.Write v ->
-              let data = Pdu.to_string v in
+            | Close -> ()
+            | Write v ->
+              let data = Types.serialize v in
               let len = String.length data in
               E.L.debug "Send datagram of %d bytes to %a" len print_sockaddr dest_addr ;
               let sz = Unix.sendto sock data 0 len [] dest_addr in
@@ -518,13 +498,11 @@ struct
             List.iter (fun sock ->
                 let sz, peer_addr = Unix.recvfrom sock recv_buffer 0 max_pdu_size [] in
                 E.L.debug "Received a datagram of %d bytes from %a" sz print_sockaddr peer_addr ;
-                (match Pdu.has_value recv_buffer 0 sz with
+                (match Types.unserialize recv_buffer 0 sz with
                 | None -> E.L.warn "Received %d bytes of garbage" sz
-                | Some sz' ->
+                | Some (sz', value) ->
                   if sz' <> sz then E.L.warn "Received %d bytes instead of %d" sz sz' else
-                  (match Pdu.of_string recv_buffer 0 sz' with
-                  | None -> E.L.warn "Cannot read value from %d bytes" sz'
-                  | Some v -> value_cb (Address.of_sockaddr peer_addr) (dgram_writer sock peer_addr) (T.Value v))))
+                  value_cb (Address.of_sockaddr peer_addr) (dgram_writer sock peer_addr) (Value value)))
           and handler = { register_files ; process_files } in
           E.register handler ;
           stop_listening

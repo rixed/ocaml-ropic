@@ -1,9 +1,10 @@
 open Batteries
 open Ropic
 
-module Marshaller (T : BaseIOType) (L : Log.S) : PDU with module BaseIOType = T =
+(* This module provides some ready made (un)serializers.
+ * And should therefore be renamed into 'Serializers'. *)
+module Marshaller =
 struct
-    module BaseIOType = T
 
     let header_size = 4 (* 2 bytes for len then 2 bytes for checksum *)
 
@@ -19,25 +20,21 @@ struct
             loop (c + Char.code str.[o]) (o+1) in
         (loop 0 ofs) land 65535
 
-    let has_value str ofs avail_len =
+    let unserialize str ofs avail_len =
         if avail_len < header_size then None else
-        let len, _ = read_header str ofs in
+        let len, sum = read_header str ofs in
         assert (len >= Marshal.header_size) ;
         let value_len = header_size + len in
         if avail_len < value_len then None else
-        Some value_len
-
-    let of_string str ofs tot_len =
-        let len, sum = read_header str ofs in
-        assert (tot_len = header_size + len) ;
         if sum <> checksum str (ofs + header_size) len then (
-            L.error "Cannot decode value, skipping" ;
+            (* FIXME: instead of None|Some, have the possibility to return
+             * an error *)
             None
         ) else (
-            Some (Marshal.from_string str (ofs + header_size))
+            Some (value_len, Marshal.from_string str (ofs + header_size))
         )
 
-    let to_string v =
+    let serialize v =
         let str = Marshal.to_string v [] in
         let word i s o =
             s.[o] <- Char.chr (i land 255) ;
@@ -49,25 +46,24 @@ struct
         word sum s 2 ;
         String.blit str 0 s header_size len ;
         s
-
 end
 
-module AllStrings = struct
-    type t_read = string
-    type t_write = string
-end
-
-module Blobber : PDU with module BaseIOType = AllStrings =
+(* Given the above Marshaller we can build any TYPES_CLT/SRV: *)
+(* NOTE: could be the default, with possibility to override (un)serialize *)
+module MarshalCltTypes (T : Rpc.TYPES) =
 struct
-    module BaseIOType = AllStrings
+  include T
+  type to_write = int * arg
+  type to_read = int * ret res
+  let serialize = Marshaller.serialize
+  let unserialize = Marshaller.unserialize
+end
 
-    let has_value _str _ofs len =
-        let max_size = 1000 in
-        if len > 0 then Some (min len max_size) else None
-
-    let of_string str ofs len =
-        Some (String.sub str ofs len)
-
-    let to_string = identity
-
+module MarshalSrvTypes (T : Rpc.TYPES) =
+struct
+  include T
+  type to_write = int * ret res
+  type to_read = int * arg
+  let serialize = Marshaller.serialize
+  let unserialize = Marshaller.unserialize
 end
