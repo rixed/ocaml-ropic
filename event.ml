@@ -28,6 +28,7 @@ sig
   val register : handler -> unit
   val loop : ?timeout:float -> ?until:(unit -> bool) -> unit -> unit
   val register_timeout : (handler -> unit) -> unit
+  val at : float -> (unit -> unit) -> unit
   val pause : float -> (unit -> unit) -> unit
   val condition : (unit -> bool) -> (unit -> unit) -> unit
   val clear : unit -> unit
@@ -121,9 +122,12 @@ struct
                       process_files = fun handler _files -> f handler } in
       register handler
 
+  let at date f =
+      alerts := AlertHeap.add (date, f) !alerts
+
   let pause delay f =
       let date = Unix.gettimeofday () +. delay in
-      alerts := AlertHeap.add (date, f) !alerts
+      at date f
 
   let condition cond f =
       conditions := (cond, f)::!conditions
