@@ -55,7 +55,7 @@ struct
   include T
   type to_write = int * arg
   type to_read = int * ret res
-  let serialize = Marshaller.serialize
+  let serialize (v : to_write) = Marshaller.serialize v
   let unserialize = Marshaller.unserialize
 end
 
@@ -64,6 +64,6 @@ struct
   include T
   type to_write = int * ret res
   type to_read = int * arg
-  let serialize = Marshaller.serialize
+  let serialize (v : to_write) = Marshaller.serialize v
   let unserialize = Marshaller.unserialize
 end
