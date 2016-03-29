@@ -57,6 +57,20 @@ struct
             lst) [] conds in
       conditions := List.rev_append !conditions rem_conds
 
+  let try_alerts () =
+      (* take care that alert can add alerts and so on: *)
+      let latest_alert = Unix.gettimeofday () +. 0.001 in
+      let rec next_alert () =
+          if AlertHeap.size !alerts > 0 then (
+              let t, f = AlertHeap.find_min !alerts in
+              if t < latest_alert then (
+                  alerts := AlertHeap.del_min !alerts ; (* take care not to call anything between find_min and del_min! *)
+                  (try f ()
+                   with exn ->
+                     L.error "some alert handler raised %s, ignoring" (Printexc.to_string exn)) ;
+                  next_alert ())) in
+      next_alert ()
+
   (* This can be changed (using register) at any point, esp. during file
    * descriptors gathering or processing. So we want to read the original
    * !handlers rather than pass its value to functions. *)
@@ -74,6 +88,9 @@ struct
                 L.error "some file handler raised %s, ignoring" (Printexc.to_string exn)
             ) !handlers in
 
+      (* alerts go first *)
+      try_alerts () ;
+      try_conditions () ;
       let open Unix in
       let rfiles, wfiles, efiles = collect_all_monitored_files () in
       let timeout =
@@ -84,32 +101,21 @@ struct
       (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
       let ll = List.length in
       L.debug "Selecting %d+%d+%d files..." (ll rfiles) (ll wfiles) (ll efiles) ;
-      (try let changed_files = select rfiles wfiles efiles timeout in
-          (* alerts go first (take care that alert can add alerts and so on) *)
-          let latest_alert = Unix.gettimeofday () +. 0.001 in
-          let rec next_alert () =
-              if AlertHeap.size !alerts > 0 then (
-                  let t, f = AlertHeap.find_min !alerts in
-                  if t < latest_alert then (
-                      alerts := AlertHeap.del_min !alerts ; (* take care not to call anything between find_min and del_min! *)
-                      (try f ()
-                       with exn ->
-                         L.error "some alert handler raised %s, ignoring" (Printexc.to_string exn)) ;
-                      next_alert ())) in
-          next_alert () ;
+      try let changed_files = select rfiles wfiles efiles timeout in
+          let l (a,b,c) = ll a + ll b + ll c in
+          L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
           (* then file handlers - notice that alerts handlers may have closed some of the fd but
            * that's ok because actually file processors could also close other fds. *)
-          let ll = List.length in let l (a,b,c) = ll a + ll b + ll c in
-          L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
           process_all_monitored_files changed_files
-      with Unix_error (EINTR,_,_) -> ()) ;
-      try_conditions ()
+      with Unix_error (EINTR,_,_) -> ()
 
   let loop ?(timeout=1.) ?(until=fun () -> false) () =
       L.info "Entering event loop" ;
+      let prev_sigpipe = Sys.(signal 13 Signal_ignore) in
       while not (until () || !handlers = [] && AlertHeap.size !alerts = 0) do
           select_once timeout ;
       done ;
+      Sys.(set_signal 13 prev_sigpipe) ;
       L.info "Exiting event loop"
 
   let register handler =
@@ -178,7 +184,7 @@ module BufferedIO (T : IOType) (E : S) =
 struct
     let try_write_buf buf fd =
         let str = Buffer.contents buf in
-        E.L.debug "writing %d bytes info fd %a" (String.length str) Log.file fd ;
+        E.L.debug "writing %d bytes into fd %a" (String.length str) Log.file fd ;
         let sz = Unix.single_write fd str 0 (String.length str) in
         Buffer.clear buf ;
         Buffer.add_substring buf str sz (String.length str - sz)
@@ -220,8 +226,12 @@ struct
         and outbuf = Buffer.create 2000
         and close_out = ref Nope and closed_in = ref false in
         let writer c =
-            assert (!close_out <> Done) ; (* otherwise why were we been given the possibility to write? *)
-            match c with
+            if !close_out = Done then
+              (* This will happen each time the client keeps the writer for a delayed answer
+                 and the connection is closed in the meantime. *)
+              let bt = Printexc.get_backtrace () in
+              E.L.debug "asked to write in a closed file from %s" bt
+            else match c with
             | Write v ->
                 T.serialize v |>
                 Buffer.add_string outbuf
@@ -246,7 +256,10 @@ struct
                         close_out := ToDo))) ;
             if List.mem outfd wfiles then (
                 if not (buffer_is_empty outbuf) then
-                    try_write_buf outbuf outfd) ;
+                    try try_write_buf outbuf outfd
+                    with Unix.Unix_error (Unix.EPIPE, _, _) ->
+                        E.L.debug "File was closed remotely" ;
+                        close_out := ToDo) ;
             if !close_out = ToDo then (
                 E.L.debug "Closing outfd" ;
                 Unix.close outfd ;

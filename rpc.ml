@@ -140,7 +140,7 @@ struct
                 w in
         let id = if timeout > 0. then (
           let id = next_id () in
-          E.L.debug "Saving continuation for message id %d" id ;
+          E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
           E.pause timeout (fun () -> try_timeout id) ;
           Hashtbl.add continuations id k ;
           id

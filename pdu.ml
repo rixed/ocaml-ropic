@@ -6,7 +6,13 @@ open Ropic
 module Marshaller =
 struct
 
-    let header_size = 4 (* 2 bytes for len then 2 bytes for checksum *)
+    (* 2 bytes for len then 2 bytes for checksum.
+     * All that this checksum achieve is to make sure we are not unserializing
+     * random data.
+     * TODO: an id for the RPC that would be given by the server, like a hash
+     * of the service name, plus a version number, to make sure we pair appropriate
+     * clients and servers? *)
+    let header_size = 4
 
     let read_header str ofs =
         (* we assume the header can be read *)
@@ -55,7 +61,7 @@ struct
   include T
   type to_write = int * arg
   type to_read = int * ret res
-  let serialize = Marshaller.serialize
+  let serialize (v : to_write) = Marshaller.serialize v
   let unserialize = Marshaller.unserialize
 end
 
@@ -64,6 +70,6 @@ struct
   include T
   type to_write = int * ret res
   type to_read = int * arg
-  let serialize = Marshaller.serialize
+  let serialize (v : to_write) = Marshaller.serialize v
   let unserialize = Marshaller.unserialize
 end
