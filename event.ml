@@ -162,7 +162,8 @@ struct
     retry 1 delay
 
   let rec forever ?(every=1.) ?(variability=0.5) f x =
-    f x ;
+    (try f x with exn ->
+        L.error "function raised %s, ignoring" (Printexc.to_string exn)) ;
     let delay = every +. variability *. (Random.float 1. -. 0.5) in
     pause delay (fun () -> forever ~every ~variability f x)
 

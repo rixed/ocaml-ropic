@@ -22,19 +22,19 @@ let file fmt fd =
   let fd = Obj.magic (fd : Unix.file_descr) in
   Printf.fprintf fmt "%d" fd
 
+let print_date fmt d =
+  let open Unix in
+  let tm = localtime d in
+  Printf.fprintf fmt "%04d-%02d-%02d %02dh%02dm%02d.%03ds"
+    (tm.tm_year + 1900)
+    (tm.tm_mon + 1)
+    tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
+    (int_of_float ((mod_float d 1.) *. 1000.))
+
 module ToFile (Conf : sig val oc : unit BatIO.output end) =
 struct
-  let date fmt d =
-    let open Unix in
-    let tm = localtime d in
-    Printf.fprintf fmt "%04d-%02d-%02d %02dh%02dm%02d.%03ds"
-      (tm.tm_year + 1900)
-      (tm.tm_mon + 1)
-      tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
-      (int_of_float ((mod_float d 1.) *. 1000.))
-    
   let print fmt =
-    Printf.fprintf Conf.oc "%a: " date (Unix.gettimeofday ()) ;
+    Printf.fprintf Conf.oc "%a: " print_date (Unix.gettimeofday ()) ;
     Printf.fprintf Conf.oc (fmt ^^ "\n%!")
 end
 
