@@ -39,6 +39,7 @@ struct
 end
 
 module ToStdout : BASE = ToFile (struct let oc = stdout end)
+module ToStderr : BASE = ToFile (struct let oc = stderr end)
 
 module ToLogfile (Conf : sig val name : string end) : BASE = ToFile (struct
   let oc = File.open_out ~mode:[`create;`append;`text] Conf.name

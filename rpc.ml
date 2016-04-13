@@ -126,7 +126,7 @@ struct
                          * can itself update the hash. *)
                         (match Hashtbl.find_option continuations id with
                         | None ->
-                            E.L.error "No continuation for message id %d (already timeouted?)" id
+                            E.L.warn "No continuation for message id %d (already timeouted?)" id
                         | Some k ->
                             E.L.debug "Continuing message id %d" id ;
                             k v ;
