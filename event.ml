@@ -30,12 +30,12 @@ sig
   val register_timeout : (handler -> unit) -> unit
   val at : float -> (unit -> unit) -> unit
   val pause : float -> (unit -> unit) -> unit
-  val condition : (unit -> bool) -> (unit -> unit) -> unit
+  val condition : ?timeout:float -> (unit -> bool) -> (unit res -> unit) -> unit
   val clear : unit -> unit
   val retry_on_error : ?max_tries:int -> ?delay:float ->
                        ?max_delay:float -> ?geom_backoff:float ->
-                       (('a Ropic.res -> unit) -> unit) ->
-                       ('a Ropic.res -> unit) -> unit
+                       (('a res -> unit) -> unit) ->
+                       ('a res -> unit) -> unit
   val forever : ?every:float -> ?variability:float ->
                 ('a -> unit) -> 'a -> unit
 end
@@ -43,18 +43,22 @@ end
 module Make (L : Log.S) : S with module L = L =
 struct
   module L = L
-  type condition = (unit -> bool) * (unit -> unit)
+  type condition = float option (* deadline *)
+                 * (unit -> bool) (* condition *)
+                 * (unit res -> unit) (* continuation *)
   let conditions = ref ([] : condition list) (* test them each time anything happens *)
 
-  let try_conditions () =
+  let try_conditions now =
       (* Warning: Callbacks are allowed to queue new conditions *)
       let conds = !conditions in
       conditions := [] ;
-      let rem_conds = List.fold_left (fun lst (c, f as cond) ->
-          try if c () then (f () ; lst) else cond::lst
-          with exn ->
-            L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
-            lst) [] conds in
+      let rem_conds = List.fold_left (fun lst (d, c, f as cond) ->
+          match d with Some dl when now > dl -> f (Err "timeout") ; lst
+          | _ -> (
+            try if c () then (f (Ok ()) ; lst) else cond::lst
+            with exn ->
+              L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
+              lst)) [] conds in
       conditions := List.rev_append !conditions rem_conds
 
   let try_alerts () =
@@ -90,13 +94,14 @@ struct
 
       (* alerts go first *)
       try_alerts () ;
-      try_conditions () ;
+      let now = Unix.gettimeofday () in
+      try_conditions now ;
       let open Unix in
       let rfiles, wfiles, efiles = collect_all_monitored_files () in
       let timeout =
           if AlertHeap.size !alerts = 0 then max_timeout else
           let next_time, _ = AlertHeap.find_min !alerts in
-          let dt = next_time -. Unix.gettimeofday () in
+          let dt = next_time -. now in
           min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
       (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
       let ll = List.length in
@@ -135,8 +140,9 @@ struct
       let date = Unix.gettimeofday () +. delay in
       at date f
 
-  let condition cond f =
-      conditions := (cond, f)::!conditions
+  let condition ?timeout cond f =
+      let deadline = Option.map (fun dt -> Unix.gettimeofday () +. dt) timeout in
+      conditions := (deadline, cond, f)::!conditions
 
   let unregister handler =
       handlers := List.filter ((!=) handler) !handlers ;
