@@ -53,12 +53,15 @@ struct
       let conds = !conditions in
       conditions := [] ;
       let rem_conds = List.fold_left (fun lst (d, c, f as cond) ->
-          match d with Some dl when now > dl -> f (Err "timeout") ; lst
-          | _ -> (
-            try if c () then (f (Ok ()) ; lst) else cond::lst
-            with exn ->
-              L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
-              lst)) [] conds in
+          (* We have to check the condition before the timeout since we may
+           * check the condition only once per second. *)
+          try if c () then (f (Ok ()) ; lst) else (
+            match d with
+            | Some dl when now > dl -> f (Err "timeout") ; lst
+            | _ -> cond::lst
+          ) with exn ->
+             L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
+             lst) [] conds in
       conditions := List.rev_append !conditions rem_conds
 
   let try_alerts () =
