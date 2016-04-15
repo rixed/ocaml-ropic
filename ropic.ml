@@ -43,8 +43,11 @@ struct
     let make name port = { name ; port }
     exception BadAddress of string
     let of_string s =
-      try Scanf.sscanf s "%s@:%d" make
-      with _ -> raise (BadAddress s)
+      try Scanf.sscanf s "%s@:%d%!" make
+      with _ -> (
+        try Scanf.sscanf s "[%s@]:%d%!" make
+        with _ -> raise (BadAddress s)
+      )
     let to_string t = t.name ^":"^ string_of_int t.port
     let print oc t = String.print oc (to_string t)
     let of_sockaddr = function
