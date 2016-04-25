@@ -166,7 +166,7 @@ struct
         pause delay (fun () ->
           retry (nb_tries + 1) (min max_delay (delay *. geom_backoff))) in
       may_fail (function
-      | Err err when nb_tries < max_tries -> fail err
+      | Err err when max_tries > 0 && nb_tries < max_tries -> fail err
       | _ as x -> try cont x with Retry err -> fail err) in
     retry 1 delay
 
