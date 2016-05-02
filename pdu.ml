@@ -6,25 +6,29 @@ open Ropic
 module Marshaller =
 struct
 
-    (* 2 bytes for len then 2 bytes for checksum.
-     * All that this checksum achieve is to make sure we are not unserializing
+    (* 4 bytes for len then 1 bytes for checksum.
+     * All that this checksum achieve is to make "sure" we are not unserializing
      * random data.
      * TODO: an id for the RPC that would be given by the server, like a hash
      * of the service name, plus a version number, to make sure we pair appropriate
      * clients and servers? *)
-    let header_size = 4
+    let header_size = 4 + 1
 
     let read_header str ofs =
         (* we assume the header can be read *)
-        let word str ofs = Char.code str.[ofs] + Char.code str.[ofs+1] lsl 8 in
-        word str ofs, word str (ofs+2)
+        let byte s o = Char.code s.[o] in
+        let word s o = byte s (o+0) +
+                       byte s (o+1) lsl 8 +
+                       byte s (o+2) lsl 16 +
+                       byte s (o+3) lsl 24 in
+        word str ofs, byte str (ofs+4)
 
     let checksum str ofs len =
         let stop = ofs + len in
         let rec loop c o =
             if o >= stop then c else
             loop (c + Char.code str.[o]) (o+1) in
-        (loop 0 ofs) land 65535
+        (loop 0 ofs) land 255
 
     let unserialize str ofs avail_len =
         if avail_len < header_size then None else
@@ -42,14 +46,17 @@ struct
 
     let serialize v =
         let str = Marshal.to_string v [] in
-        let word i s o =
-            s.[o] <- Char.chr (i land 255) ;
-            s.[o+1] <- Char.chr (i lsr 8) in
+        let byte s o i = s.[o] <- Char.chr (i land 255) in
+        let word s o i =
+            byte s (o+0) i ;
+            byte s (o+1) (i lsr 8) ;
+            byte s (o+2) (i lsr 16) ;
+            byte s (o+3) (i lsr 24) in
         let len = String.length str in
         let sum = checksum str 0 len in
         let s = String.create (header_size + len) in
-        word len s 0 ;
-        word sum s 2 ;
+        word s 0 len ;
+        word s 4 sum ;
         String.blit str 0 s header_size len ;
         s
 end
