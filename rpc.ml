@@ -101,7 +101,7 @@ struct
     let try_timeout id =
         match Hashtbl.find_option continuations id with
         | Some k ->
-            E.L.debug "Timeouting message id %d" id ;
+            E.L.warn "Timeouting message id %d" id ;
             Hashtbl.remove continuations id ;
             k (Err "timeout")
         | None -> ()

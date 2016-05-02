@@ -165,9 +165,15 @@ struct
         L.info "Failed with %s, will retry in %.2f seconds" err delay ;
         pause delay (fun () ->
           retry (nb_tries + 1) (min max_delay (delay *. geom_backoff))) in
-      may_fail (function
-      | Err err when max_tries > 0 && nb_tries < max_tries -> fail err
-      | _ as x -> try cont x with Retry err -> fail err) in
+      let keep_trying = max_tries <= 0 || nb_tries < max_tries in
+      try may_fail (function
+        | Err err when keep_trying -> fail err
+        | _ as x -> try cont x with Retry err -> fail err)
+      with exn -> (
+        let exn_str = Printexc.to_string exn in
+        if keep_trying then fail exn_str
+        else cont (Err ("Exception "^ exn_str))
+      ) in
     retry 1 delay
 
   let rec forever ?(every=1.) ?(variability=0.5) f x =
