@@ -3,7 +3,7 @@ open Ropic
 
 (* This module provides some ready made (un)serializers.
  * And should therefore be renamed into 'Serializers'. *)
-module Marshaller =
+module Marshaler =
 struct
 
     (* 4 bytes for len then 1 bytes for checksum.
@@ -61,15 +61,15 @@ struct
         s
 end
 
-(* Given the above Marshaller we can build any TYPES_CLT/SRV: *)
+(* Given the above Marshaler we can build any TYPES_CLT/SRV: *)
 (* NOTE: could be the default, with possibility to override (un)serialize *)
 module MarshalCltTypes (T : Rpc.TYPES) =
 struct
   include T
   type to_write = int * arg
   type to_read = int * ret res
-  let serialize (v : to_write) = Marshaller.serialize v
-  let unserialize = Marshaller.unserialize
+  let serialize (v : to_write) = Marshaler.serialize v
+  let unserialize = Marshaler.unserialize
 end
 
 module MarshalSrvTypes (T : Rpc.TYPES) =
@@ -77,6 +77,6 @@ struct
   include T
   type to_write = int * ret res
   type to_read = int * arg
-  let serialize (v : to_write) = Marshaller.serialize v
-  let unserialize = Marshaller.unserialize
+  let serialize (v : to_write) = Marshaler.serialize v
+  let unserialize = Marshaler.unserialize
 end

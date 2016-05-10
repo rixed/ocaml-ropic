@@ -145,6 +145,7 @@ struct
           Hashtbl.add continuations id k ;
           id
         ) else 0 in
+        (* TODO: propagate timeout *)
         writer (Write (id, v))
 end
 

@@ -13,8 +13,8 @@ struct
     struct
         type to_write = string
         type to_read = string
-        let serialize = Pdu.Marshaller.serialize
-        let unserialize = Pdu.Marshaller.unserialize
+        let serialize = Pdu.Marshaler.serialize
+        let unserialize = Pdu.Marshaler.unserialize
     end
     module Clt = Event.UdpClient (Types) (E)
     module Srv = Event.UdpServer (Types) (E)
@@ -51,15 +51,15 @@ struct
     struct
         type to_write = string
         type to_read = int
-        let serialize = Pdu.Marshaller.serialize
-        let unserialize = Pdu.Marshaller.unserialize
+        let serialize = Pdu.Marshaler.serialize
+        let unserialize = Pdu.Marshaler.unserialize
     end
     module SrvTypes =
     struct
         type to_write = int
         type to_read = string
-        let serialize = Pdu.Marshaller.serialize
-        let unserialize = Pdu.Marshaller.unserialize
+        let serialize = Pdu.Marshaler.serialize
+        let unserialize = Pdu.Marshaler.unserialize
     end
     module Clt = Event.TcpClient (CltTypes) (E)
     module Srv = Event.TcpServer (SrvTypes) (E)

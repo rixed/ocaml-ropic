@@ -126,13 +126,13 @@ struct
     struct
         type to_write = string
         type to_read = string
-        include Pdu.Marshaller
+        include Pdu.Marshaler
     end
     module CltTypes =
     struct
         type to_write = string
         type to_read = string
-        include Pdu.Marshaller
+        include Pdu.Marshaler
     end
     module Clt =
     struct
