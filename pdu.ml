@@ -33,7 +33,6 @@ struct
     let unserialize str ofs avail_len =
         if avail_len < header_size then None else
         let len, sum = read_header str ofs in
-        assert (len >= Marshal.header_size) ;
         let value_len = header_size + len in
         if avail_len < value_len then None else
         if sum <> checksum str (ofs + header_size) len then (
@@ -41,11 +40,16 @@ struct
              * an error *)
             None
         ) else (
-            Some (value_len, Marshal.from_string str (ofs + header_size))
-        )
+            match Snappy.uncompress_sub str (ofs + header_size) len with
+            | exception Snappy.Error _err -> None
+            | str ->
+              assert (String.length str >= Marshal.header_size) ;
+              Some (value_len, Marshal.from_string str 0)
+            )
 
     let serialize v =
         let str = Marshal.to_string v [] in
+        let str = Snappy.compress str in
         let byte s o i = s.[o] <- Char.chr (i land 255) in
         let word s o i =
             byte s (o+0) i ;
