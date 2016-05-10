@@ -70,7 +70,7 @@ end
 module MarshalCltTypes (T : Rpc.TYPES) =
 struct
   include T
-  type to_write = int * arg
+  type to_write = int (* request id *) * float (* deadline *) * arg
   type to_read = int * ret res
   let serialize (v : to_write) = Marshaler.serialize v
   let unserialize = Marshaler.unserialize
@@ -80,7 +80,7 @@ module MarshalSrvTypes (T : Rpc.TYPES) =
 struct
   include T
   type to_write = int * ret res
-  type to_read = int * arg
+  type to_read = int * float * arg
   let serialize (v : to_write) = Marshaler.serialize v
   let unserialize = Marshaler.unserialize
 end

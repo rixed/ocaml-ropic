@@ -17,10 +17,11 @@ sig
     type arg
     type ret
 end
+
 module type TYPES_CLT =
 sig
     include TYPES
-    type to_write = int * arg
+    type to_write = int (* RPC id *) * float (* deadline *) * arg
     type to_read = int * ret res
     val serialize : to_write -> string
     val unserialize : string -> int -> int -> (int * to_read) option
@@ -29,7 +30,7 @@ module type TYPES_SRV =
 sig
     include TYPES
     type to_write = int * ret res
-    type to_read = int * arg
+    type to_read = int * float * arg
     val serialize : to_write  -> string
     val unserialize : string -> int -> int -> (int * to_read) option
 end
@@ -39,7 +40,7 @@ struct
     module type CLT =
     sig
         module Types : TYPES_CLT
-        val call : ?timeout:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
+        val call : ?timeout:float -> ?deadline:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
         (* TODO: a call_multiple that allows several answers to be received. Useful to implement pubsub *)
         (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
     end
@@ -50,10 +51,16 @@ struct
 
         (* First argument is the address we want to serve from,
          * Second is the query service function, which takes the remote address
-         * the query is coming from, the continuation, and the argument in last
-         * position for easier pattern matching.
+         * the query is coming from, the continuation and the argument
+         * in last position for easier pattern matching.
          * Returns a shutdown function. *)
-        val serve : Address.t -> (Address.t -> (Types.ret res -> unit) -> Types.arg -> unit) -> (unit -> unit)
+        val serve : Address.t ->
+                    (Address.t ->
+                     deadline:float ->
+                     (Types.ret res -> unit) ->
+                     Types.arg ->
+                     unit) ->
+                    (unit -> unit)
     end
 end
 
@@ -67,8 +74,12 @@ struct
 
     let serve h f =
         Server.serve h (fun addr write -> function
-            | Value (id, v) ->
-                f addr (fun res -> write (Write (id, res))) v
+            | Value (id, deadline, v) ->
+                let now = Unix.gettimeofday () in
+                if deadline < now then
+                  E.L.warn "message id %d is dead on arrival" id
+                else
+                  f addr ~deadline (fun res -> write (Write (id, res))) v
             | EndOfFile ->
                 write Close)
 end
@@ -108,7 +119,17 @@ struct
 
     (* timeout = 0 means we expect no answer other than an error if we cannot send.
      * FIXME: a Maker wrapper for when the return type is unit, that will force this timeout to 0. *)
-    let call ?(timeout=0.5) h v k =
+    let call ?(timeout=0.5) ?deadline h v k =
+        (* We propagate deadlines instead of timeouts because we assume NTP synchronized machines.
+         * NTP over internet is accurate to a few milliseconds, which is good enough for timeouting
+         * RPCs. Of course there are issues during leap seconds, especially if your timeout is less
+         * than a few seconds. Leap seconds are easy to detect though, and we could replace
+         * gettimeofday with a function that would smooth leap seconds away. TODO. *)
+        let now = Unix.gettimeofday () in
+        let deadline_to = now +. timeout in
+        let deadline = match deadline with
+            | None -> deadline_to
+            | Some d -> min d deadline_to in
         let writer =
             match Hashtbl.find_option cnxs h with
             | Some w -> w
@@ -141,11 +162,10 @@ struct
         let id = if timeout > 0. then (
           let id = next_id () in
           E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
-          E.pause timeout (fun () -> try_timeout id) ;
+          E.at deadline (fun () -> try_timeout id) ;
           Hashtbl.add continuations id k ;
           id
         ) else 0 in
-        (* TODO: propagate timeout *)
-        writer (Write (id, v))
+        writer (Write (id, deadline, v))
 end
 
