@@ -21,7 +21,7 @@ end
 module type TYPES_CLT =
 sig
     include TYPES
-    type to_write = int (* RPC id *) * float (* deadline *) * arg
+    type to_write = int (* RPC id *) * float (* deadline *) * int (* criticality *) * arg
     type to_read = int * ret res
     val serialize : to_write -> string
     val unserialize : string -> int -> int -> (int * to_read) option
@@ -30,7 +30,7 @@ module type TYPES_SRV =
 sig
     include TYPES
     type to_write = int * ret res
-    type to_read = int * float * arg
+    type to_read = int * float * int * arg
     val serialize : to_write  -> string
     val unserialize : string -> int -> int -> (int * to_read) option
 end
@@ -40,7 +40,7 @@ struct
     module type CLT =
     sig
         module Types : TYPES_CLT
-        val call : ?timeout:float -> ?deadline:float -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
+        val call : ?timeout:float -> ?deadline:float -> ?criticality:int -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
         (* TODO: a call_multiple that allows several answers to be received. Useful to implement pubsub *)
         (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
     end
@@ -57,6 +57,7 @@ struct
         val serve : Address.t ->
                     (Address.t ->
                      deadline:float ->
+                     criticality:int ->
                      (Types.ret res -> unit) ->
                      Types.arg ->
                      unit) ->
@@ -74,12 +75,12 @@ struct
 
     let serve h f =
         Server.serve h (fun addr write -> function
-            | Value (id, deadline, v) ->
+            | Value (id, deadline, criticality, v) ->
                 let now = Unix.gettimeofday () in
                 if deadline < now then
                   E.L.warn "message id %d is dead on arrival" id
                 else
-                  f addr ~deadline (fun res -> write (Write (id, res))) v
+                  f addr ~deadline ~criticality (fun res -> write (Write (id, res))) v
             | EndOfFile ->
                 write Close)
 end
@@ -119,7 +120,7 @@ struct
 
     (* timeout = 0 means we expect no answer other than an error if we cannot send.
      * FIXME: a Maker wrapper for when the return type is unit, that will force this timeout to 0. *)
-    let call ?(timeout=0.5) ?deadline h v k =
+    let call ?(timeout=0.5) ?deadline ?(criticality=4) h v k =
         (* We propagate deadlines instead of timeouts because we assume NTP synchronized machines.
          * NTP over internet is accurate to a few milliseconds, which is good enough for timeouting
          * RPCs. Of course there are issues during leap seconds, especially if your timeout is less
@@ -166,6 +167,6 @@ struct
           Hashtbl.add continuations id k ;
           id
         ) else 0 in
-        writer (Write (id, deadline, v))
+        writer (Write (id, deadline, criticality, v))
 end
 

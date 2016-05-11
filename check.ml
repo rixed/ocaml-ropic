@@ -106,7 +106,7 @@ struct
     let shutdown = ref ignore
 
     let () =
-        let f _addr ~deadline w (a, b) = Ok (String.of_int (a+b)) |> w in
+        let f _addr ~deadline ~criticality w (a, b) = Ok (String.of_int (a+b)) |> w in
         shutdown := RPC_Srv.serve host f
 
     let checks () =
