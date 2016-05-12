@@ -80,7 +80,8 @@ struct
             | Value (id, deadline, criticality, v) ->
                 let now = Unix.gettimeofday () in
                 if deadline < now then
-                  E.L.warn "message id %d is dead on arrival" id
+                  E.L.warn "message id %d is dead on arrival (deadline was %a)"
+                    id Log.print_date deadline
                 else
                   f addr ~deadline ~criticality (fun res -> write (Write (id, res))) v
             | EndOfFile ->
@@ -129,7 +130,8 @@ struct
          * than a few seconds. Leap seconds are easy to detect though, and we could replace
          * gettimeofday with a function that would smooth leap seconds away. TODO. *)
         let now = Unix.gettimeofday () in
-        let deadline_to = now +. timeout in
+        (* Deadline must be set even when we expect no response (timeout=0) *)
+        let deadline_to = now +. (if timeout > 0. then timeout else 600.) in
         let deadline = match deadline with
             | None -> deadline_to
             | Some d -> min d deadline_to in
