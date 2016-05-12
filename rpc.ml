@@ -40,7 +40,9 @@ struct
     module type CLT =
     sig
         module Types : TYPES_CLT
-        val call : ?timeout:float -> ?deadline:float -> ?criticality:int -> Address.t -> Types.arg -> (Types.ret res -> unit) -> unit
+        val call : ?timeout:float -> ?deadline:float -> ?criticality:int ->
+                   ?max_in_flight:int -> Address.t -> Types.arg ->
+                   (Types.ret res -> unit) -> unit
         (* TODO: a call_multiple that allows several answers to be received. Useful to implement pubsub *)
         (* TODO: add the timeout callback here so that we can call it only when the fd is empty *)
     end
@@ -120,7 +122,7 @@ struct
 
     (* timeout = 0 means we expect no answer other than an error if we cannot send.
      * FIXME: a Maker wrapper for when the return type is unit, that will force this timeout to 0. *)
-    let call ?(timeout=0.5) ?deadline ?(criticality=4) h v k =
+    let call ?(timeout=0.5) ?deadline ?(criticality=4) ?max_in_flight h v k =
         (* We propagate deadlines instead of timeouts because we assume NTP synchronized machines.
          * NTP over internet is accurate to a few milliseconds, which is good enough for timeouting
          * RPCs. Of course there are issues during leap seconds, especially if your timeout is less
@@ -160,13 +162,18 @@ struct
                         Hashtbl.remove cnxs h) in
                 Hashtbl.add cnxs h w ;
                 w in
-        let id = if timeout > 0. then (
-          let id = next_id () in
-          E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
-          E.at deadline (fun () -> try_timeout id) ;
-          Hashtbl.add continuations id k ;
-          id
-        ) else 0 in
-        writer (Write (id, deadline, criticality, v))
+        match max_in_flight with
+        | Some m when Hashtbl.length continuations >= m ->
+          E.L.warn "Cannot send new query, already %d in flight" m ;
+          k (Err "too many in flight")
+        | _ ->
+          let id = if timeout > 0. then (
+            let id = next_id () in
+            E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
+            E.at deadline (fun () -> try_timeout id) ;
+            Hashtbl.add continuations id k ;
+            id
+          ) else 0 in
+          writer (Write (id, deadline, criticality, v))
 end
 
