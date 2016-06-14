@@ -108,17 +108,20 @@ struct
           min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
       (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
       let ll = List.length in
-      L.debug "Selecting %d+%d+%d files..." (ll rfiles) (ll wfiles) (ll efiles) ;
+      L.debug "Selecting %d+%d+%d files with timeout %f..." (ll rfiles) (ll wfiles) (ll efiles) timeout ;
       try let changed_files = select rfiles wfiles efiles timeout in
           let l (a,b,c) = ll a + ll b + ll c in
           L.debug "selected %d files out of %d" (l changed_files) (l (rfiles,wfiles,efiles)) ;
           (* then file handlers - notice that alerts handlers may have closed some of the fd but
            * that's ok because actually file processors could also close other fds. *)
-          process_all_monitored_files changed_files
+          if changed_files <> ([],[],[]) then (
+              process_all_monitored_files changed_files ;
+              try_conditions now  (* retry conditions because handlers may have changed the outcome *)
+          )
       with Unix_error (EINTR,_,_) -> ()
 
   let loop ?(timeout=1.) ?(until=fun () -> false) () =
-      L.info "Entering event loop" ;
+      L.info "Entering event loop with timeout=%f" timeout ;
       let prev_sigpipe = Sys.(signal 13 Signal_ignore) in
       while not (until () || !handlers = [] && AlertHeap.size !alerts = 0) do
           select_once timeout ;
@@ -158,7 +161,7 @@ struct
       conditions := []
 
   (* Wrap f so that it would retry a few times on errors *)
-  let retry_on_error ?(max_tries=5) ?(delay=0.31) ?(max_delay=30.) ?(geom_backoff=3.)
+  let retry_on_error ?(max_tries=10) ?(delay=0.31) ?(max_delay=30.) ?(geom_backoff=1.3)
                      may_fail cont =
     let rec retry nb_tries delay =
       let fail err =
@@ -212,8 +215,12 @@ struct
            notice that if more than 1500 bytes are available
            then the event loop will call us again at once *)
         let str = String.create 1500 in
-        let sz = Unix.read fd str 0 (String.length str) in
-        E.L.debug "Read %d bytes from file" sz ;
+        E.L.debug "About to read from file %a" Log.file fd ;
+        let sz = try Unix.read fd str 0 (String.length str)
+                 with Unix.Unix_error (Unix.ECONNRESET, _, _) ->
+                   E.L.warn "Connection was reset; assuming EOF" ;
+                   0 in
+        E.L.debug "Read %d bytes from file %a" sz Log.file fd ;
         if sz = 0 then (
             value_cb writer EndOfFile ;
             true
@@ -241,7 +248,8 @@ struct
         let inbuf = Buffer.create 2000
         and outbuf = Buffer.create 2000
         and close_out = ref Nope and closed_in = ref false in
-        let writer c =
+        let buffer_is_empty b = Buffer.length b = 0 in
+        let writer handler c =
             if !close_out = Done then
               (* This will happen each time the client keeps the writer for a delayed answer
                  and the connection is closed in the meantime. *)
@@ -252,8 +260,22 @@ struct
                 T.serialize v |>
                 Buffer.add_string outbuf
             | Close ->
-                if !close_out = Nope then close_out := ToDo in
-        let buffer_is_empty b = Buffer.length b = 0 in
+                (* We cannot close at once because we have to wait until the
+                   output buffer is empty and cannot empty it right now
+                   because we have to wait the fd to be writable. *)
+                if !close_out = Nope then (
+                    close_out := ToDo ;
+                    E.condition (fun () -> buffer_is_empty outbuf)
+                        (function
+                        | Ok () ->
+                            E.L.debug "Closing outfd %a" Log.file outfd ;
+                            Unix.close outfd ;
+                            close_out := Done ;
+                            if infd = outfd then closed_in := true ;
+                            if !closed_in then E.unregister handler
+                        | Err err ->
+                            E.L.error "Error while waiting to close outfd: %s" err)
+                ) in
         let register_files (rfiles, wfiles, efiles) =
             (if !closed_in then rfiles else infd :: rfiles),
             (if !close_out <> Done && not (buffer_is_empty outbuf) then outfd :: wfiles else wfiles),
@@ -261,7 +283,7 @@ struct
         let process_files handler (rfiles, wfiles, _) =
             if List.mem infd rfiles then (
                 assert (not !closed_in) ; (* otherwise we were not in the select fileset *)
-                if try_read_value infd inbuf value_cb writer then (
+                if try_read_value infd inbuf value_cb (writer handler) then (
                     E.L.debug "infd is closed by peer" ;
                     closed_in := true ;
                     if infd <> outfd then (
@@ -273,19 +295,13 @@ struct
             if List.mem outfd wfiles then (
                 if not (buffer_is_empty outbuf) then
                     try try_write_buf outbuf outfd
-                    with Unix.Unix_error (Unix.EPIPE, _, _) ->
+                    with Unix.Unix_error ((Unix.EPIPE | Unix.ECONNRESET), _, _) ->
                         E.L.debug "File was closed remotely" ;
-                        close_out := ToDo) ;
-            if !close_out = ToDo then (
-                E.L.debug "Closing outfd" ;
-                Unix.close outfd ;
-                close_out := Done ;
-                if infd = outfd then closed_in := true ;
-                if !closed_in then E.unregister handler)
-            in
-        E.register { register_files ; process_files } ;
+                        close_out := ToDo) in
+        let handler = { register_files ; process_files } in
+        E.register handler ;
         (* Return the writer function *)
-        writer
+        (writer handler)
 end
 
 (* The CLIENT module implements the client side of a connected channel.
@@ -378,7 +394,7 @@ struct
                 setsockopt sock SO_REUSEADDR true ;
                 setsockopt sock SO_KEEPALIVE true ;
                 bind sock ai.ai_addr ;
-                listen sock 5 ;
+                listen sock 25 ; (* On OSX it helps to have a big backlog *)
                 E.L.info "Listening on %a" print_addrinfo ai ;
                 Some sock
             with exn ->
@@ -407,8 +423,8 @@ struct
             list_union listen_fds rfiles |>
             List.iter (fun listen_fd ->
                 let client_fd, sockaddr = Unix.accept listen_fd in
-                E.L.info "Accepting new cnx %a" Log.file client_fd ;
                 let clt = Address.of_sockaddr sockaddr in
+                E.L.info "Accepting new cnx %a from %a" Log.file client_fd Address.print clt ;
                 buf_writers := BIO.start client_fd client_fd (value_cb clt) :: !buf_writers
             )
         and handler = { register_files ; process_files } in

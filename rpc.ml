@@ -85,6 +85,7 @@ struct
                 else
                   f addr ~deadline ~criticality (fun res -> write (Write (id, res))) v
             | EndOfFile ->
+                E.L.debug "End of file from %s, closing." (Address.to_string addr) ;
                 write Close)
 end
 
@@ -135,47 +136,54 @@ struct
         let deadline = match deadline with
             | None -> deadline_to
             | Some d -> min d deadline_to in
-        let writer =
-            match Hashtbl.find_option cnxs h with
-            | Some w -> w
-            | None ->
-                (* connect to the server *)
-                E.L.debug "Need a new connection to %s" (Address.to_string h) ;
-                let w = Client.client h (fun write input ->
-                    match input with
-                    | Value (id, v) ->
-                        if id = 0 then (
-                          E.L.error "Received an answer for a query that was not expecting one"
-                        ) else
-                        (* Note: we can't modify continuations in place because we'd
-                         * have to call write before returning to modify_opt, and write
-                         * can itself update the hash. *)
-                        (match Hashtbl.find_option continuations id with
-                        | None ->
-                            E.L.warn "No continuation for message id %d (already timeouted?)" id
-                        | Some k ->
-                            E.L.debug "Continuing message id %d" id ;
-                            k v ;
-                            Hashtbl.remove continuations id)
-                    | EndOfFile ->
-                        (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
-                        E.L.info "Closing cnx to %s" (Address.to_string h) ;
-                        write Close ;
-                        Hashtbl.remove cnxs h) in
-                Hashtbl.add cnxs h w ;
-                w in
-        match max_in_flight with
-        | Some m when Hashtbl.length continuations >= m ->
-          E.L.warn "Cannot send new query, already %d in flight" m ;
-          k (Err "too many in flight")
-        | _ ->
-          let id = if timeout > 0. then (
-            let id = next_id () in
-            E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
-            E.at deadline (fun () -> try_timeout id) ;
-            Hashtbl.add continuations id k ;
-            id
-          ) else 0 in
-          writer (Write (id, deadline, criticality, v))
+        if deadline < now then (
+          E.L.warn "Message is dead on departure, (deadline was %a), timeouting"
+            Log.print_date deadline ;
+          k (Err "expiry")
+        ) else (
+          E.L.debug "Call an RPC with timeout=%fs, deadline=%a" timeout Log.print_date deadline ;
+          let writer =
+              match Hashtbl.find_option cnxs h with
+              | Some w -> w
+              | None ->
+                  (* connect to the server *)
+                  E.L.debug "Need a new connection to %s" (Address.to_string h) ;
+                  let w = Client.client h (fun write input ->
+                      match input with
+                      | Value (id, v) ->
+                          if id = 0 then (
+                            E.L.error "Received an answer for a query that was not expecting one"
+                          ) else
+                          (* Note: we can't modify continuations in place because we'd
+                           * have to call write before returning to modify_opt, and write
+                           * can itself update the hash. *)
+                          (match Hashtbl.find_option continuations id with
+                          | None ->
+                              E.L.warn "No continuation for message id %d (already timeouted?)" id
+                          | Some k ->
+                              E.L.debug "Continuing message id %d" id ;
+                              k v ;
+                              Hashtbl.remove continuations id)
+                      | EndOfFile ->
+                          (* since we don't know which messages were sent via this cnx, rely on timeout to notify continuations *)
+                          E.L.info "Closing cnx to %s" (Address.to_string h) ;
+                          write Close ;
+                          Hashtbl.remove cnxs h) in
+                  Hashtbl.add cnxs h w ;
+                  w in
+          match max_in_flight with
+          | Some m when Hashtbl.length continuations >= m ->
+            E.L.warn "Cannot send new query, already %d in flight" m ;
+            k (Err "too many in flight")
+          | _ ->
+            let id = if timeout > 0. then (
+              let id = next_id () in
+              E.L.debug "Saving continuation for message id %d with timeout in %f" id timeout ;
+              E.at deadline (fun () -> try_timeout id) ;
+              Hashtbl.add continuations id k ;
+              id
+            ) else 0 in
+            writer (Write (id, deadline, criticality, v))
+        )
 end
 
