@@ -396,12 +396,15 @@ struct
 
     let listen my_addr =
         let open Unix in
+        let setsockopt_no_exn s o v = ignore_exceptions (setsockopt s o) v in
         getaddrinfo my_addr.Address.name (string_of_int my_addr.Address.port) [
             AI_SOCKTYPE SOCK_STREAM ; AI_PASSIVE ; AI_CANONNAME ] |>
         List.filter_map (fun ai ->
             try let sock = socket ai.ai_family ai.ai_socktype 0 in
-                setsockopt sock SO_REUSEADDR true ;
-                setsockopt sock SO_KEEPALIVE true ;
+                setsockopt_no_exn sock SO_REUSEADDR true ;
+                setsockopt_no_exn sock SO_KEEPALIVE true ;
+                if ai.ai_family = PF_INET6 then
+                    setsockopt_no_exn sock IPV6_ONLY true ;
                 bind sock ai.ai_addr ;
                 listen sock 25 ; (* On OSX it helps to have a big backlog *)
                 E.L.info "Listening on %a" print_addrinfo ai ;
