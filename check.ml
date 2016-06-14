@@ -106,7 +106,9 @@ struct
     let shutdown = ref ignore
 
     let () =
-        let f _addr ~deadline ~criticality w (a, b) = Ok (String.of_int (a+b)) |> w in
+        let f _addr ~deadline ~criticality w (a, b) =
+          ignore deadline ; ignore criticality ;
+          Ok (String.of_int (a+b)) |> w in
         shutdown := RPC_Srv.serve host f
 
     let checks () =
@@ -120,7 +122,7 @@ struct
             RPC_Clt.call host (4, 5) (fun r ->
                 E.L.debug "Test RPC(4,5)" ;
                 OUnit2.assert_equal ~msg:"RPC answer is OK, 9" r (Ok "9") ;
-            !shutdown ()))
+                !shutdown ()))
 end
 
 let () =
