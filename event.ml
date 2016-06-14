@@ -30,6 +30,7 @@ sig
   val register_timeout : (handler -> unit) -> unit
   val at : float -> (unit -> unit) -> unit
   val pause : float -> (unit -> unit) -> unit
+  (* The condition test is not allowed to change the outcome of another condition test. *)
   val condition : ?timeout:float -> (unit -> bool) -> (unit res -> unit) -> unit
   val clear : unit -> unit
   val retry_on_error : ?max_tries:int -> ?delay:float ->
@@ -48,21 +49,29 @@ struct
                  * (unit res -> unit) (* continuation *)
   let conditions = ref ([] : condition list) (* test them each time anything happens *)
 
-  let try_conditions now =
+  let rec try_conditions now =
       (* Warning: Callbacks are allowed to queue new conditions *)
       let conds = !conditions in
       conditions := [] ;
-      let rem_conds = List.fold_left (fun lst (d, c, f as cond) ->
-          (* We have to check the condition before the timeout since we may
-           * check the condition only once per second. *)
-          try if c () then (f (Ok ()) ; lst) else (
-            match d with
-            | Some dl when now > dl -> f (Err "timeout") ; lst
-            | _ -> cond::lst
-          ) with exn ->
-             L.error "condition or handler raised %s, ignoring" (Printexc.to_string exn) ;
-             lst) [] conds in
-      conditions := List.rev_append !conditions rem_conds
+      let called, rem_conds = List.fold_left (fun (called, lst as prev) (d, c, f as cond) ->
+          (* We consider c() does _not_ change any state for other conditions: *)
+          match c () with
+          | exception exn ->
+              L.error "Condition raised %s, ignoring" (Printexc.to_string exn) ;
+              prev
+          | true ->
+              (try f (Ok ())
+              with exn ->
+                  L.error "Condition handler raised %s, ignoring" (Printexc.to_string exn)) ;
+              true, lst
+          | false ->
+              match d with
+              | Some dl when now > dl ->
+                  f (Err "timeout") ; true, lst
+              | _ -> called, cond::lst
+          ) (false, []) conds in
+      conditions := List.rev_append !conditions rem_conds ;
+      if called then try_conditions now
 
   let try_alerts () =
       (* take care that alert can add alerts and so on: *)
@@ -106,7 +115,7 @@ struct
           let next_time, _ = AlertHeap.find_min !alerts in
           let dt = next_time -. now in
           min max_timeout (max 0. dt) (* since negative timeout mean wait forever *) in
-      (* Notice: we timeout the select after a max_timeout so that handlers have a chance to implement timeouting *)
+      (* Notice: we timeout the select after a max_timeout so that conditions will be retried soon. *)
       let ll = List.length in
       L.debug "Selecting %d+%d+%d files with timeout %f..." (ll rfiles) (ll wfiles) (ll efiles) timeout ;
       try let changed_files = select rfiles wfiles efiles timeout in
